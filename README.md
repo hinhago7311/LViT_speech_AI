@@ -1,1 +1,1 @@
-# LViT_Voice_AI
+# LViT_speech_AI

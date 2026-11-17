@@ -11,7 +11,7 @@ if errorlevel 1 goto failed
 ".venv\Scripts\python.exe" -m pip install -r requirements-export.txt
 if errorlevel 1 goto failed
 echo.
-echo Training setup complete. Start the app with start_app.bat.
+echo Training setup complete. Start the learning studio with start_learning.bat.
 echo GPU memory fit still depends on the model and data.
 pause
 exit /b 0

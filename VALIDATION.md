@@ -54,4 +54,4 @@ git diff --check
 
 GUI 학습 버튼의 프로세스 연결은 가짜 학습 프로세스로 검사했고, 실제 LoRA 학습 루프와 CTranslate2 변환은 기존 작은 무작위 모델 통합 테스트에서 별도로 실행했습니다. 앱 화면 캡처도 합성 음성과 예시 정답으로 만들었습니다.
 
-자료 등록용 PyAV는 Python 3.11을 지원하는 **av 18.0.0**으로 고정하고 다시 검사했습니다. `setup_app.bat`, `setup_training.bat`, `start_app.bat`의 Windows 실행, 실제 Windows 음성 재생, GPU 학습·VRAM·정확도는 아직 검증하지 않았습니다. 표시 서버나 Tkinter가 없는 환경에서는 GUI 테스트를 건너뜁니다.
+자료 등록용 PyAV는 Python 3.11을 지원하는 **av 18.0.0**으로 고정하고 다시 검사했습니다. `setup_learning.bat`, `setup_training.bat`, `start_learning.bat`의 Windows 실행, 실제 Windows 음성 재생, GPU 학습·VRAM·정확도는 아직 검증하지 않았습니다. 표시 서버나 Tkinter가 없는 환경에서는 GUI 테스트를 건너뜁니다.

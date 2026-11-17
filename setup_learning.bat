@@ -7,7 +7,7 @@ if not exist ".venv\Scripts\python.exe" (
 ".venv\Scripts\python.exe" -m pip install -r requirements-app.txt
 if errorlevel 1 goto failed
 echo.
-echo Setup complete. Double-click start_app.bat to open the app.
+echo Setup complete. Double-click start_learning.bat to open the learning studio.
 echo Training needs the PyTorch setup described in README.md.
 pause
 exit /b 0

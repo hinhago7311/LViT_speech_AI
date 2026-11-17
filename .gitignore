@@ -25,3 +25,12 @@ exports/
 *.pt
 *.pth
 *.ckpt
+*.opus
+*.wma
+*.wave
+*.aifc
+.lvit-review.json
+.lvit-app.json
+.lvit-app-*.tmp
+..lvit-review.json-*
+.manifest.jsonl-*

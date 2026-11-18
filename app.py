@@ -434,7 +434,7 @@ class ReviewApp:
             return
         missing = training_dependencies()
         if missing:
-            messagebox.showinfo("학습 환경 설치 필요", "자료 입력·저장은 지금 사용할 수 있습니다.\n현재 GTX 1050 Ti에서는 setup_training.bat으로 학습 환경을 설치할 수 있습니다.\n다른 GPU는 README의 설치 안내를 확인하세요.\n\n필요한 항목: " + ", ".join(missing), parent=self.root)
+            messagebox.showinfo("학습 환경 설치 필요", "자료 입력·저장은 지금 사용할 수 있습니다.\nREADME.md의 '명령행 학습 환경 설치' 안내에 따라 학습 패키지를 설치하세요.\n\n필요한 항목: " + ", ".join(missing), parent=self.root)
             return
         snapshot = [dict(row) for row in self.records]
         previous, adapter = self.previous_data.get() or None, self.adapter.get() or None

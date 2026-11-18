@@ -10,7 +10,7 @@
 
 ## PC 앱으로 파일과 정답 등록하기
 
-Windows에 Python 3.11(Tcl/Tk 포함)을 설치한 뒤:
+Windows에 [Python 3.11 64비트](https://www.python.org/ftp/python/3.11.9/python-3.11.9-amd64.exe)(Tcl/Tk 포함)을 설치한 뒤 진행합니다. 설치 첫 화면에서 **Add python.exe to PATH**를 체크하세요.
 
 1. 처음 한 번 **`setup_learning.bat`**을 실행합니다. 자료 입력·오디오 변환에 필요한 패키지를 설치하며, Whisper 모델이나 학습용 PyTorch는 다운로드하지 않습니다.
 2. **`start_learning.bat`**을 실행하면 학습 스튜디오 창이 열립니다.
@@ -32,8 +32,7 @@ Windows에 Python 3.11(Tcl/Tk 포함)을 설치한 뒤:
 
 자료 등록만 할 때는 GPU나 학습 패키지가 필요하지 않습니다. 실제 학습에는 아래의 학습 환경 설치가 필요합니다.
 
-- **현재 GTX 1050 Ti:** `setup_training.bat`을 한 번 실행합니다. CUDA 11.8용 PyTorch 2.6과 학습 패키지를 설치합니다. 드라이버·실제 GPU 메모리 적합성은 해당 PC에서 확인해야 합니다.
-- **다른 GPU:** 아래 PyTorch 설치 안내에서 맞는 빌드를 설치합니다. 특히 향후 RTX 50 시리즈에는 기존 GTX용 설치 파일을 그대로 사용하지 마세요.
+아래 **명령행 학습 환경 설치** 안내에 따라 GPU에 맞는 PyTorch와 학습 패키지를 설치합니다.
 
 검수한 자료를 준비한 뒤 **1단계 학습 점검**으로 실행을 확인하고, **학습 시작**을 누르면 기본 3 epochs 학습을 진행합니다. `자동`은 사용 가능한 GPU를 선택하고, `CPU`는 CPU에서 실행합니다. 4GB GPU에서는 메모리가 부족할 수 있고 CPU 학습은 느립니다.
 
@@ -53,7 +52,13 @@ py -3.11 -m venv .venv
 python -m pip install --upgrade pip
 ```
 
-[PyTorch 공식 설치 안내](https://pytorch.org/get-started/locally/)에서 GPU에 맞는 CUDA 빌드를 **먼저 설치**한 다음 실행합니다.
+현재 **GTX 1050 Ti**에서는 위 가상환경을 활성화한 뒤 CUDA 11.8용 PyTorch 2.6을 설치합니다.
+
+```powershell
+python -m pip install --upgrade --force-reinstall torch==2.6.0 --index-url https://download.pytorch.org/whl/cu118
+```
+
+다른 GPU는 [PyTorch 공식 설치 안내](https://pytorch.org/get-started/locally/)에서 GPU에 맞는 빌드를 먼저 설치합니다. PyTorch 설치 후 학습 패키지를 설치합니다.
 
 ```powershell
 python -m pip install -r requirements-export.txt

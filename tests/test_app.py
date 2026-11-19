@@ -90,11 +90,104 @@ class DesktopTests(unittest.TestCase):
         self.assertFalse(self.app.views[1].reviewed.get())
         self.assertTrue(self.app.views[0].reviewed.get())
 
+    def test_hidden_saved_session_survives_new_session_save_and_reopen(self):
+        self.add_three()
+        for index, view in enumerate(self.app.views):
+            view.session.set("phone-01")
+            view.text.insert("1.0", f"휴대폰 정답 {index}")
+        self.app.mark_all_reviewed()
+        self.app.save()
+        self.wait()
+        saved = load_project(self.project)
+        audio_before = {path: path.read_bytes() for path in (self.project / "audio").glob("*.wav")}
+
+        self.app.hide_record(saved[0]["id"])
+        self.assertEqual(len(self.app.views), 2)
+        self.assertFalse(self.app.dirty)
+        self.app.show_all()
+        self.assertEqual(len(self.app.views), 3)
+        self.assertFalse(self.app.dirty)
+        self.app.hide_visible()
+        self.assertEqual(len(self.app.views), 0)
+        self.assertFalse(self.app.dirty)
+
+        source = self.folder / "새 마이크.wav"
+        sf.write(source, np.sin(np.arange(1600) * .11) * .1, 16000)
+        original = source.read_bytes()
+        self.app.session.set("mic-01")
+        with patch("app.filedialog.askopenfilenames", return_value=(str(source),)):
+            self.app.add_files()
+        self.wait()
+        self.assertEqual(len(self.app.views), 1)
+        self.app.views[0].text.insert("1.0", "새 마이크 정답")
+        self.app.mark_all_reviewed()
+        self.app.save()
+        self.wait()
+
+        restored = load_project(self.project)
+        self.assertEqual(restored[:3], saved)
+        self.assertEqual(restored[3]["text"], "새 마이크 정답")
+        self.assertEqual(restored[3]["session"], "mic-01")
+        self.assertTrue(all(row["reviewed"] for row in restored))
+        self.assertEqual(source.read_bytes(), original)
+        for path, content in audio_before.items():
+            self.assertEqual(path.read_bytes(), content)
+        self.assertEqual(len((self.project / "manifest.jsonl").read_text(encoding="utf-8").splitlines()), 4)
+
+        self.app.hide_visible()
+        self.assertFalse(self.app.dirty)
+        self.app.open_project(self.project, ask=False)
+        self.wait()
+        self.assertEqual(len(self.app.views), 4)
+        self.assertEqual(self.app.records, restored)
+        self.assertFalse(self.app.dirty)
+        self.error.assert_not_called()
+
+    def test_excluding_data_requires_confirmation_and_keeps_audio(self):
+        self.add_three()
+        self.app.common_answer.set("검수한 정답")
+        self.app.apply_common()
+        self.app.mark_all_reviewed()
+        self.app.save()
+        self.wait()
+        saved = load_project(self.project)
+        identity = saved[0]["id"]
+        audio = self.project / saved[0]["audio"]
+        original = audio.read_bytes()
+
+        with patch("app.messagebox.askyesno", return_value=False) as confirmation:
+            self.app.remove(identity)
+        confirmation.assert_called_once()
+        self.assertEqual(self.app.records, saved)
+        self.assertFalse(self.app.dirty)
+        self.assertEqual(load_project(self.project), saved)
+
+        with patch("app.messagebox.askyesno", return_value=True) as confirmation:
+            self.app.remove(identity)
+        confirmation.assert_called_once()
+        self.assertEqual(self.app.records, saved[1:])
+        self.assertTrue(self.app.dirty)
+        self.assertEqual(load_project(self.project), saved)
+        self.app.save()
+        self.wait()
+        self.assertEqual(load_project(self.project), saved[1:])
+        self.assertEqual(audio.read_bytes(), original)
+
     def test_training_prepares_current_answers_and_streams_process_log(self):
         self.add_three()
         self.app.common_answer.set("새로 입력한 정답")
         self.app.apply_common()
         self.app.mark_all_reviewed()
+        self.app.save()
+        self.wait()
+        saved = load_project(self.project)
+        self.app.hide_visible()
+        with patch("app.filedialog.askopenfilenames", return_value=(str(self.folder / "녹음 0.wav"),)):
+            self.app.add_files()
+        self.wait()
+        self.assertEqual(len(self.app.views), 0)
+        self.assertEqual(self.app.records, saved)
+        self.warning.assert_called_once()
         output = self.project / "runs" / "test-run"
         (output / "best").mkdir(parents=True)
 
@@ -108,6 +201,7 @@ class DesktopTests(unittest.TestCase):
             rows = [json.loads(line) for name in ("train", "validation", "test")
                     for line in (prepared / f"{name}.jsonl").read_text(encoding="utf-8").splitlines()]
             self.assertEqual({row["text"] for row in rows}, {"새로 입력한 정답"})
+            self.assertEqual({row["session"] for row in rows}, {"session-0", "session-1", "session-2"})
             self.assertTrue(quick)
             return FinishedProcess(), output
 

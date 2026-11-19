@@ -41,14 +41,17 @@ class RecordingRow:
         self.session = tk.StringVar(value=record["session"])
         self.language = tk.StringVar(value=record["language"])
         self.reviewed = tk.BooleanVar(value=record.get("reviewed") is True)
+        ttk.Label(right, text="녹음 세션").grid(row=0, column=0, sticky="w")
         self.session_entry = ttk.Entry(right, textvariable=self.session, width=18)
-        self.session_entry.grid(row=0, column=0, columnspan=2, sticky="ew")
+        self.session_entry.grid(row=0, column=1, sticky="ew")
         self.language_box = ttk.Combobox(right, textvariable=self.language, values=("ko", "en"), width=5, state="readonly")
         self.language_box.grid(row=1, column=0, sticky="w", pady=5)
         self.check = ttk.Checkbutton(right, text="검수 완료", variable=self.reviewed, command=self._review_changed)
         self.check.grid(row=1, column=1, padx=(8, 0))
-        self.remove = ttk.Button(right, text="목록에서 제거", command=lambda: app.remove(record["id"]))
-        self.remove.grid(row=2, column=0, columnspan=2, sticky="ew")
+        self.hide = ttk.Button(right, text="화면에서 숨기기", command=lambda: app.hide_record(record["id"]))
+        self.hide.grid(row=2, column=0, columnspan=2, sticky="ew")
+        self.remove = ttk.Button(right, text="자료에서 제외", command=lambda: app.remove(record["id"]))
+        self.remove.grid(row=3, column=0, columnspan=2, sticky="ew")
         self.session.trace_add("write", self._metadata_changed)
         self.language.trace_add("write", self._metadata_changed)
 
@@ -78,7 +81,7 @@ class RecordingRow:
 
     def set_enabled(self, enabled):
         state = "normal" if enabled else "disabled"
-        for widget in (self.text, self.session_entry, self.play, self.check, self.remove):
+        for widget in (self.text, self.session_entry, self.play, self.check, self.hide, self.remove):
             widget.configure(state=state)
         self.language_box.configure(state="readonly" if enabled else "disabled")
 
@@ -89,6 +92,7 @@ class ReviewApp:
         self.font = ("맑은 고딕" if sys.platform == "win32" else "Noto Sans CJK KR", 10)
         self.project = Path(project_dir or Path(__file__).parent / "data" / "my-voice").resolve()
         self.records, self.views = [], []
+        self.hidden_ids = set()
         self.events = queue.Queue()
         self.busy = self.dirty = self.close_after_stop = False
         self.closed = False
@@ -158,8 +162,8 @@ class ReviewApp:
         ttk.Label(common, text="공통 정답").pack(side="left", padx=(0, 8))
         self.common_input = ttk.Entry(common, textvariable=self.common_answer)
         self.common_input.pack(side="left", fill="x", expand=True)
-        self._button(common, "빈 정답칸에만 적용", self.apply_common).pack(side="left", padx=8)
-        self._button(common, "정답 있는 항목 전체 검수 완료", self.mark_all_reviewed).pack(side="left")
+        self._button(common, "보이는 빈칸에 적용", self.apply_common).pack(side="left", padx=8)
+        self._button(common, "보이는 항목 검수 완료", self.mark_all_reviewed).pack(side="left")
         heading = ttk.Frame(outer, padding=(10, 4))
         heading.grid(row=6, column=0, sticky="ew")
         ttk.Label(heading, text="음성 파일 · 재생", width=22).pack(side="left")
@@ -181,8 +185,12 @@ class ReviewApp:
         root.bind_all("<Button-5>", self._wheel)
         footer = ttk.Frame(outer)
         footer.grid(row=8, column=0, sticky="ew", pady=10)
-        ttk.Label(footer, textvariable=self.count).pack(side="left")
-        self._button(footer, "초안·검수 자료 일괄 저장", self.save, style="Accent.TButton").pack(side="right")
+        ttk.Label(footer, textvariable=self.count).pack(anchor="w")
+        visibility = ttk.Frame(footer)
+        visibility.pack(fill="x", pady=(5, 0))
+        self._button(visibility, "현재 목록 숨기기", self.hide_visible).pack(side="left")
+        self._button(visibility, "전체 다시 보기", self.show_all).pack(side="left", padx=5)
+        self._button(visibility, "초안·검수 자료 일괄 저장", self.save, style="Accent.TButton").pack(side="right")
         training = ttk.LabelFrame(outer, text="학습 실행", padding=9)
         training.grid(row=9, column=0, sticky="ew")
         options = ttk.Frame(training)
@@ -218,17 +226,43 @@ class ReviewApp:
 
     def changed(self):
         self.dirty = True
+        self._refresh_count()
+
+    def _refresh_count(self):
         ready = sum(row.get("reviewed") is True for row in self.records)
-        self.count.set(f"전체 {len(self.records)}개 · 검수 완료 {ready}개 · 초안 {len(self.records) - ready}개")
+        hidden = sum(row["id"] in self.hidden_ids for row in self.records)
+        sessions = len({row["session"].strip() for row in self.records if row.get("reviewed") and row["session"].strip()})
+        self.count.set(f"전체 {len(self.records)}개 · 화면 {len(self.records) - hidden}개 · 숨김 {hidden}개 · 검수 완료 {ready}개 · 초안 {len(self.records) - ready}개 · 검수 세션 {sessions}개")
 
     def render(self):
         for child in self.row_area.winfo_children():
             child.destroy()
-        self.views = [RecordingRow(self, record) for record in self.records]
+        self.views = [RecordingRow(self, record) for record in self.records if record["id"] not in self.hidden_ids]
         if not self.records:
             ttk.Label(self.row_area, text="음성 파일을 여러 개 추가하세요.\n각 파일 오른쪽에 정답을 입력할 수 있습니다.",
                       justify="center", padding=35).pack(fill="x")
-        self.changed()
+        elif not self.views:
+            ttk.Label(self.row_area, text=f"자료 {len(self.records)}개를 화면에서 숨겼습니다. 모두 저장되며 검수 완료 자료는 학습에 포함됩니다.\n「전체 다시 보기」로 다시 표시할 수 있습니다.",
+                      justify="center", padding=35).pack(fill="x")
+        self._refresh_count()
+
+    def hide_record(self, identity):
+        self._sync()
+        self.hidden_ids.add(identity)
+        self.render()
+        self.status.set("화면에서만 숨겼습니다. 자료는 유지되며 「전체 다시 보기」로 확인할 수 있습니다.")
+
+    def hide_visible(self):
+        self._sync()
+        self.hidden_ids.update(view.record["id"] for view in self.views)
+        self.render()
+        self.status.set("현재 목록을 화면에서만 숨겼습니다. 기존 자료도 함께 저장되며 검수 완료 자료는 학습에 포함됩니다.")
+
+    def show_all(self):
+        self._sync()
+        self.hidden_ids.clear()
+        self.render()
+        self.status.set("숨긴 자료를 모두 다시 표시했습니다.")
 
     def _busy(self, enabled, status=None):
         self.busy = enabled
@@ -295,6 +329,7 @@ class ReviewApp:
         def loaded(rows):
             self.stop_audio()
             self.project, self.records = path, rows
+            self.hidden_ids.clear()
             self.project_path.set(str(path))
             self.previous_data.set("")
             self.adapter.set("")
@@ -334,7 +369,7 @@ class ReviewApp:
                 try:
                     row = import_recording(path, self.project, session, language)
                     if row["id"] in seen:
-                        raise ValueError("같은 음성이 이미 목록에 있습니다.")
+                        raise ValueError("같은 음성이 이미 등록되어 있습니다. 숨긴 자료는 「전체 다시 보기」로 확인하세요.")
                     seen.add(row["id"])
                     imported.append(row)
                 except Exception as error:
@@ -344,6 +379,8 @@ class ReviewApp:
         def added(result):
             imported, errors = result
             self.records.extend(imported)
+            if imported:
+                self.changed()
             self.render()
             self.status.set(f"{len(imported)}개 추가 · {len(errors)}개 제외. 정답을 입력한 뒤 검수 완료를 선택하세요.")
             if errors:
@@ -352,8 +389,13 @@ class ReviewApp:
 
     def remove(self, identity):
         self._sync()
+        if not messagebox.askyesno("학습 자료에서 제외", "이 항목의 정답·세션·검수 기록을 학습 자료에서 제외할까요?\n일괄 저장하면 저장된 목록에도 반영됩니다. 음성 파일 자체는 유지됩니다.\n\n화면만 정리하려면 취소 후 「화면에서 숨기기」를 사용하세요.", parent=self.root):
+            return
         self.records = [row for row in self.records if row["id"] != identity]
+        self.hidden_ids.discard(identity)
+        self.changed()
         self.render()
+        self.status.set("자료에서 제외했습니다. 일괄 저장하면 저장된 목록에도 반영됩니다. 음성 파일은 유지됩니다.")
 
     def apply_common(self):
         text = self.common_answer.get().strip()
@@ -368,7 +410,7 @@ class ReviewApp:
                 view.sync()
                 count += 1
         self.changed()
-        self.status.set(f"빈 정답칸 {count}개에만 적용했습니다. 재생해서 확인한 뒤 검수 완료를 선택하세요.")
+        self.status.set(f"화면에 보이는 빈 정답칸 {count}개에만 적용했습니다. 재생해서 확인한 뒤 검수 완료를 선택하세요.")
 
     def mark_all_reviewed(self):
         self._sync()
@@ -384,7 +426,7 @@ class ReviewApp:
         def saved(result):
             path, count = result
             self.dirty = False
-            self.status.set(f"저장 완료 · 학습 자료 {count}개 · 미검수 초안 {len(snapshot) - count}개 · {path}")
+            self.status.set(f"저장 완료 · 숨긴 자료 포함 학습 자료 {count}개 · 미검수 초안 {len(snapshot) - count}개 · {path}")
             if finished:
                 finished()
         self._job(lambda: save_project(self.project, snapshot), saved, "초안과 검수 완료 자료를 저장하고 있습니다…")

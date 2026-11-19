@@ -134,6 +134,66 @@ class DataTests(unittest.TestCase):
             self.assertEqual(new[name], old[name])
         self.assertEqual({row["session"] for row in new["train"]},
                          {old["train"][0]["session"], "new-day"})
+        self.assertFalse((self.root / "v2" / "label_corrections.json").exists())
+
+    def test_continued_preparation_versions_reviewed_language_and_text_corrections(self):
+        rows, prior, old = self.prepared_v1()
+        wrong_test = {**old["test"][0], "language": "en"}
+        (prior / "test.jsonl").write_text(
+            json.dumps(wrong_test, ensure_ascii=False) + "\n", encoding="utf-8")
+        corrected_session = old["validation"][0]["session"]
+        for row in rows:
+            if row["session"] == corrected_session:
+                row["text"] = "검수 후 바로잡은 정답"
+        self.wav("new.wav", frequency=900)
+        rows.append(self.row("new.wav", "new-day"))
+        source = self.manifest(rows)
+        source_before = source.read_bytes()
+        prior_before = {path: path.read_bytes() for path in prior.iterdir()}
+        audio_before = {path: path.read_bytes() for path in self.root.glob("*.wav")}
+
+        output = self.root / "v2"
+        new = prepare_dataset(source, output, seed=999, previous_data=prior)
+        self.assertEqual(new["test"][0]["language"], "ko")
+        self.assertEqual(new["validation"][0]["text"], "검수 후 바로잡은 정답")
+        for name in ("validation", "test"):
+            self.assertEqual(new[name][0]["session"], old[name][0]["session"])
+            self.assertEqual(new[name][0]["audio_sha256"], old[name][0]["audio_sha256"])
+        self.assertEqual({row["session"] for row in new["train"]},
+                         {old["train"][0]["session"], "new-day"})
+        audit = json.loads((output / "label_corrections.json").read_text(encoding="utf-8"))
+        self.assertEqual(audit["previous_data"], str(prior.resolve()))
+        self.assertEqual(len(audit["corrections"]), 2)
+        by_split = {change["split"]: change for change in audit["corrections"]}
+        self.assertEqual(by_split["test"]["before"]["language"], "en")
+        self.assertEqual(by_split["test"]["after"]["language"], "ko")
+        self.assertEqual(by_split["validation"]["before"]["text"], old["validation"][0]["text"])
+        self.assertEqual(by_split["validation"]["after"]["text"], "검수 후 바로잡은 정답")
+        for name in ("validation", "test"):
+            self.assertEqual(by_split[name]["session"], old[name][0]["session"])
+            self.assertEqual(by_split[name]["audio_sha256"], new[name][0]["audio_sha256"])
+        self.assertEqual(source.read_bytes(), source_before)
+        for path, content in {**prior_before, **audio_before}.items():
+            self.assertEqual(path.read_bytes(), content)
+
+    def test_label_corrections_do_not_allow_heldout_audio_or_session_changes(self):
+        rows, prior, old = self.prepared_v1()
+        target_session = old["test"][0]["session"]
+        self.wav("replacement.wav", frequency=1200)
+        prior_before = {path: path.read_bytes() for path in prior.iterdir()}
+        for name, change in (
+                ("session-moved", {"session": "new-training-day"}),
+                ("audio-replaced", {"audio": "replacement.wav"}),
+                ("not-reviewed", {"reviewed": False})):
+            with self.subTest(change=name):
+                changed = [{**row, **change} if row["session"] == target_session else dict(row)
+                           for row in rows]
+                output = self.root / name
+                with self.assertRaises(ValueError):
+                    prepare_dataset(self.manifest(changed), output, previous_data=prior)
+                self.assertFalse(output.exists())
+        for path, content in prior_before.items():
+            self.assertEqual(path.read_bytes(), content)
 
     def test_continued_preparation_rejects_inconsistent_prior_session_assignments(self):
         rows, prior, old = self.prepared_v1()
@@ -147,7 +207,7 @@ class DataTests(unittest.TestCase):
         rows, prior, old = self.prepared_v1()
         missing = old["test"][0]["session"]
         rows = [row for row in rows if row["session"] != missing]
-        with self.assertRaisesRegex(ValueError, "모든 음성과 정답"):
+        with self.assertRaisesRegex(ValueError, "음성 또는 세션"):
             prepare_dataset(self.manifest(rows), self.root / "v2", previous_data=prior)
 
 

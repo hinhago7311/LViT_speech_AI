@@ -11,6 +11,7 @@ import numpy as np
 import soundfile as sf
 
 from review_store import load_project
+from app_jobs import prepare_project
 
 try:
     import tkinter as tk
@@ -89,6 +90,68 @@ class DesktopTests(unittest.TestCase):
         self.root.update()
         self.assertFalse(self.app.views[1].reviewed.get())
         self.assertTrue(self.app.views[0].reviewed.get())
+
+    def test_new_file_language_and_explicit_visible_language_changes_are_preserved(self):
+        self.app.language.set("ko")
+        self.add_three()
+        self.assertTrue(all(view.language_label.winfo_class() == "TLabel" for view in self.app.views))
+        self.app.common_answer.set("검수한 정답")
+        self.app.apply_common()
+        self.app.mark_all_reviewed()
+        self.app.save()
+        self.wait()
+        saved = load_project(self.project)
+        self.app.hide_record(saved[0]["id"])
+
+        self.app.language.set("en")
+        self.assertEqual(self.app.records, saved)
+        self.assertFalse(self.app.dirty)
+        self.app.apply_language()
+        self.assertEqual([row["language"] for row in self.app.records], ["ko", "en", "en"])
+        self.assertEqual([row["reviewed"] for row in self.app.records], [True, False, False])
+        self.assertTrue(self.app.dirty)
+        self.app.mark_all_reviewed()
+        self.app.save()
+        self.wait()
+        self.app.apply_language()
+        self.assertFalse(self.app.dirty)
+        self.assertTrue(all(row["reviewed"] for row in self.app.records))
+
+        self.app.language.set("ko")
+        self.assertEqual([row["language"] for row in self.app.records], ["ko", "en", "en"])
+        source = self.folder / "새 한국어.wav"
+        sf.write(source, np.sin(np.arange(1600) * .13) * .1, 16000)
+        self.app.session.set("new-ko-session")
+        with patch("app.filedialog.askopenfilenames", return_value=(str(source),)):
+            self.app.add_files()
+        self.wait()
+        self.assertEqual([row["language"] for row in self.app.records], ["ko", "en", "en", "ko"])
+        self.app.views[-1].text.insert("1.0", "새 한국어 정답")
+        self.app.mark_all_reviewed()
+        self.app.save()
+        self.wait()
+        self.app.open_project(self.project, ask=False)
+        self.wait()
+        restored = load_project(self.project)
+        self.assertEqual(self.app.records, restored)
+        self.assertEqual([row["language"] for row in restored], ["ko", "en", "en", "ko"])
+        self.assertTrue(all(row["reviewed"] for row in restored))
+        self.error.assert_not_called()
+
+    def test_mouse_wheel_does_not_change_the_new_file_language(self):
+        self.root.deiconify()
+        self.root.update()
+        self.app.language_input.focus_force()
+        for language, sequence, options in (
+                ("ko", "<MouseWheel>", {"delta": -120}),
+                ("en", "<MouseWheel>", {"delta": 120}),
+                ("ko", "<Button-5>", {}),
+                ("en", "<Button-4>", {})):
+            with self.subTest(language=language, sequence=sequence):
+                self.app.language.set(language)
+                self.app.language_input.event_generate(sequence, **options)
+                self.root.update()
+                self.assertEqual(self.app.language.get(), language)
 
     def test_hidden_saved_session_survives_new_session_save_and_reopen(self):
         self.add_three()
@@ -181,6 +244,14 @@ class DesktopTests(unittest.TestCase):
         self.app.save()
         self.wait()
         saved = load_project(self.project)
+        prior = prepare_project(self.project)
+        old_test = prior / "test.jsonl"
+        old_test_rows = [json.loads(line) for line in old_test.read_text(encoding="utf-8").splitlines()]
+        old_test_rows[0]["language"] = "en"
+        old_test.write_text("".join(json.dumps(row, ensure_ascii=False) + "\n" for row in old_test_rows),
+                            encoding="utf-8")
+        prior_before = old_test.read_bytes()
+        self.app.previous_data.set(str(prior))
         self.app.hide_visible()
         with patch("app.filedialog.askopenfilenames", return_value=(str(self.folder / "녹음 0.wav"),)):
             self.app.add_files()
@@ -202,6 +273,11 @@ class DesktopTests(unittest.TestCase):
                     for line in (prepared / f"{name}.jsonl").read_text(encoding="utf-8").splitlines()]
             self.assertEqual({row["text"] for row in rows}, {"새로 입력한 정답"})
             self.assertEqual({row["session"] for row in rows}, {"session-0", "session-1", "session-2"})
+            corrections = json.loads((prepared / "label_corrections.json").read_text(encoding="utf-8"))
+            self.assertEqual(len(corrections["corrections"]), 1)
+            self.assertEqual(corrections["corrections"][0]["before"]["language"], "en")
+            self.assertEqual(corrections["corrections"][0]["after"]["language"], "ko")
+            self.assertEqual(old_test.read_bytes(), prior_before)
             self.assertTrue(quick)
             return FinishedProcess(), output
 

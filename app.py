@@ -44,8 +44,8 @@ class RecordingRow:
         ttk.Label(right, text="녹음 세션").grid(row=0, column=0, sticky="w")
         self.session_entry = ttk.Entry(right, textvariable=self.session, width=18)
         self.session_entry.grid(row=0, column=1, sticky="ew")
-        self.language_box = ttk.Combobox(right, textvariable=self.language, values=("ko", "en"), width=5, state="readonly")
-        self.language_box.grid(row=1, column=0, sticky="w", pady=5)
+        self.language_label = ttk.Label(right, textvariable=self.language, width=5)
+        self.language_label.grid(row=1, column=0, sticky="w", pady=5)
         self.check = ttk.Checkbutton(right, text="검수 완료", variable=self.reviewed, command=self._review_changed)
         self.check.grid(row=1, column=1, padx=(8, 0))
         self.hide = ttk.Button(right, text="화면에서 숨기기", command=lambda: app.hide_record(record["id"]))
@@ -83,7 +83,6 @@ class RecordingRow:
         state = "normal" if enabled else "disabled"
         for widget in (self.text, self.session_entry, self.play, self.check, self.hide, self.remove):
             widget.configure(state=state)
-        self.language_box.configure(state="readonly" if enabled else "disabled")
 
 
 class ReviewApp:
@@ -152,8 +151,11 @@ class ReviewApp:
         ttk.Label(tools, text="새 파일의 녹음 세션").pack(side="left", padx=(16, 5))
         self.session_input = ttk.Entry(tools, textvariable=self.session, width=26)
         self.session_input.pack(side="left")
+        ttk.Label(tools, text="새 파일 언어").pack(side="left", padx=(8, 0))
         self.language_input = ttk.Combobox(tools, textvariable=self.language, values=("ko", "en"), state="readonly", width=5)
         self.language_input.pack(side="left", padx=7)
+        for event in ("<MouseWheel>", "<Button-4>", "<Button-5>"):
+            self.language_input.bind(event, self._language_wheel)
         self._button(tools, "재생 중지", self.stop_audio).pack(side="right")
         ttk.Label(outer, text="같은 원본의 필터별 녹음은 같은 세션으로 묶으세요. 학습·검증·평가에는 서로 다른 세션 3개 이상이 필요합니다.",
                   foreground="#68758b").grid(row=4, column=0, sticky="w", pady=(0, 8))
@@ -190,6 +192,7 @@ class ReviewApp:
         visibility.pack(fill="x", pady=(5, 0))
         self._button(visibility, "현재 목록 숨기기", self.hide_visible).pack(side="left")
         self._button(visibility, "전체 다시 보기", self.show_all).pack(side="left", padx=5)
+        self._button(visibility, "보이는 항목 언어 적용", self.apply_language).pack(side="left")
         self._button(visibility, "초안·검수 자료 일괄 저장", self.save, style="Accent.TButton").pack(side="right")
         training = ttk.LabelFrame(outer, text="학습 실행", padding=9)
         training.grid(row=9, column=0, sticky="ew")
@@ -219,6 +222,10 @@ class ReviewApp:
         if getattr(event, "delta", 0):
             direction = -1 if event.delta > 0 else 1
         self.canvas.yview_scroll(direction * 3, "units")
+
+    def _language_wheel(self, event):
+        self._wheel(event)
+        return "break"
 
     def _sync(self):
         for view in self.views:
@@ -418,6 +425,16 @@ class ReviewApp:
             view.reviewed.set(bool(view.record["text"].strip() and view.record["session"].strip()))
             view.sync()
         self.changed()
+
+    def apply_language(self):
+        self._sync()
+        language = self.language.get()
+        count = 0
+        for view in self.views:
+            if view.language.get() != language:
+                view.language.set(language)
+                count += 1
+        self.status.set(f"보이는 항목 {count}개의 언어를 {language}로 수정했습니다. 변경한 항목은 다시 검수 완료한 뒤 저장하세요.")
 
     def save(self, finished=None):
         self._sync()

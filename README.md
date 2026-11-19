@@ -6,6 +6,8 @@
 
 Windows에서 등록 후 학습·추가 학습·평가를 따라 하려면 [메모장용 사용 설명서](LEARNING_GUIDE_KO.txt)를 참고하세요. 복사해서 실행할 CMD 명령을 포함합니다.
 
+평가와 결과 비교만 보려면 [평가 전용 설명서](EVALUATION_GUIDE_KO.txt)를 사용하세요. [설명서·복사 전용 명령어 TXT 묶음](https://raw.githubusercontent.com/hinhago7311/LViT_speech_AI/codex/whisper-small-training/docs/LViT_evaluation_guide.zip)에서 명령어 파일 전체를 복사해 실행할 수 있습니다.
+
 기존 설치에는 [덮어쓰기용 업데이트 ZIP](https://raw.githubusercontent.com/hinhago7311/LViT_speech_AI/codex/whisper-small-training/updates/LViT_learning_update.zip)의 내용만 기존 앱 폴더에 복사하세요. 설치된 패키지와 학습 자료를 유지하며, 적용 순서는 [업데이트 안내](UPDATE_INSTRUCTIONS.txt)에 있습니다.
 
 ![파일 옆에 정답을 입력하는 학습 앱](docs/app-preview.png)

@@ -40,6 +40,13 @@ class DataTests(unittest.TestCase):
         return {"audio": audio, "text": "지금 마이크 소리 잘 들리시나요?",
                 "session": session, "language": "ko", "reviewed": True, **changes}
 
+    def external_validation(self, rows):
+        path = self.root / "별도 검증" / "manifest.jsonl"
+        path.parent.mkdir(exist_ok=True)
+        path.write_text("".join(json.dumps(row, ensure_ascii=False) + "\n" for row in rows),
+                        encoding="utf-8")
+        return path
+
     def test_manifest_requires_reviewed_correction_and_resolves_relative_audio(self):
         self.wav("one.wav")
         row = read_manifest(self.manifest([self.row("one.wav")]))[0]
@@ -209,6 +216,111 @@ class DataTests(unittest.TestCase):
         rows = [row for row in rows if row["session"] != missing]
         with self.assertRaisesRegex(ValueError, "음성 또는 세션"):
             prepare_dataset(self.manifest(rows), self.root / "v2", previous_data=prior)
+
+    def test_external_validation_persists_across_later_preparations_without_changing_sources(self):
+        rows, prior, old = self.prepared_v1()
+        external_rows = [
+            self.row(str(self.wav(f"external-{i}.wav", frequency=1300 + i * 200)),
+                     "external-validation") for i in range(2)]
+        external = self.external_validation(external_rows)
+        main = self.manifest(rows)
+        original = {path: path.read_bytes() for path in
+                    [main, external, *prior.iterdir(), *self.root.glob("*.wav")]}
+        second = self.root / "v2"
+        merged = prepare_dataset(main, second, previous_data=prior, validation_manifest=external)
+        self.assertEqual(merged["train"], old["train"])
+        self.assertEqual(merged["test"], old["test"])
+        self.assertEqual(merged["validation"][:len(old["validation"])], old["validation"])
+        self.assertEqual({row["session"] for row in merged["validation"]},
+                         {old["validation"][0]["session"], "external-validation"})
+        self.assertEqual(len(merged["validation"]), len(old["validation"]) + 2)
+        for path, content in original.items():
+            self.assertEqual(path.read_bytes(), content)
+        previous_before = {path: path.read_bytes() for path in second.iterdir()}
+
+        rows.append(self.row(str(self.wav("new-training.wav", frequency=2100)), "new-training"))
+        main = self.manifest(rows)
+        main_before = main.read_bytes()
+        third = prepare_dataset(main, self.root / "v3", previous_data=second,
+                                validation_manifest=external)
+        self.assertEqual(third["validation"], merged["validation"])
+        self.assertEqual(third["test"], old["test"])
+        self.assertEqual({row["session"] for row in third["train"]},
+                         {old["train"][0]["session"], "new-training"})
+        self.assertEqual(main.read_bytes(), main_before)
+        self.assertEqual(external.read_bytes(), original[external])
+        for path, content in previous_before.items():
+            self.assertEqual(path.read_bytes(), content)
+
+    def test_external_validation_rejects_missing_unreviewed_and_overlapping_sources(self):
+        rows, prior, old = self.prepared_v1()
+        main = self.manifest(rows)
+        new_audio = str(self.wav("external.wav", frequency=1500))
+        fresh = self.row(new_audio, "external-validation")
+        prior_before = {path: path.read_bytes() for path in prior.iterdir()}
+        main_before = main.read_bytes()
+        variants = (
+            ("initial-split", [fresh], None),
+            ("same-audio", [self.row(old["train"][0]["audio"], "external-validation")], prior),
+            ("same-session", [self.row(new_audio, old["validation"][0]["session"])], prior),
+            ("old-test-session", [self.row(new_audio, old["test"][0]["session"])], prior),
+            ("duplicate-source", [fresh, dict(fresh)], prior),
+            ("unreviewed", [{**fresh, "reviewed": False}], prior),
+            ("missing-audio", [{**fresh, "audio": str(self.root / "missing.wav")}], prior),
+        )
+        for name, external_rows, previous in variants:
+            with self.subTest(case=name):
+                external = self.external_validation(external_rows)
+                external_before = external.read_bytes()
+                output = self.root / name
+                with self.assertRaises((ValueError, FileNotFoundError)):
+                    prepare_dataset(main, output, previous_data=previous,
+                                    validation_manifest=external)
+                self.assertFalse(output.exists())
+                self.assertEqual(external.read_bytes(), external_before)
+        for old_role in ("train", "test"):
+            with self.subTest(previous_role=old_role):
+                removed_session = old[old_role][0]["session"]
+                reduced = self.root / f"main-without-{old_role}.jsonl"
+                reduced.write_text("".join(json.dumps(row, ensure_ascii=False) + "\n"
+                                           for row in rows if row["session"] != removed_session),
+                                   encoding="utf-8")
+                external = self.external_validation([old[old_role][0]])
+                before = external.read_bytes()
+                output = self.root / f"previous-{old_role}-as-validation"
+                with self.assertRaises(ValueError):
+                    prepare_dataset(reduced, output, previous_data=prior,
+                                    validation_manifest=external)
+                self.assertFalse(output.exists())
+                self.assertEqual(external.read_bytes(), before)
+        with self.assertRaises((ValueError, FileNotFoundError)):
+            prepare_dataset(main, self.root / "missing-manifest", previous_data=prior,
+                            validation_manifest=self.root / "missing.jsonl")
+        self.assertFalse((self.root / "missing-manifest").exists())
+        self.assertEqual(main.read_bytes(), main_before)
+        for path, content in prior_before.items():
+            self.assertEqual(path.read_bytes(), content)
+
+    def test_previously_connected_validation_cannot_be_dropped_or_silently_omitted(self):
+        rows, prior, _ = self.prepared_v1()
+        main = self.manifest(rows)
+        external_rows = [
+            self.row(str(self.wav(f"external-{i}.wav", frequency=1300 + i * 200)),
+                     "external-validation") for i in range(2)]
+        external = self.external_validation(external_rows)
+        second = self.root / "v2"
+        prepare_dataset(main, second, previous_data=prior, validation_manifest=external)
+        previous_before = {path: path.read_bytes() for path in second.iterdir()}
+        for name, source in (("disconnected", None),
+                             ("removed-row", self.external_validation(external_rows[1:]))):
+            with self.subTest(case=name):
+                output = self.root / name
+                with self.assertRaises(ValueError):
+                    prepare_dataset(main, output, previous_data=second,
+                                    validation_manifest=source)
+                self.assertFalse(output.exists())
+        for path, content in previous_before.items():
+            self.assertEqual(path.read_bytes(), content)
 
 
 if __name__ == "__main__":

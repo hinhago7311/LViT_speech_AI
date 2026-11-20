@@ -82,3 +82,20 @@ GUI 학습 버튼의 프로세스 연결은 가짜 학습 프로세스로 검사
 
 실행: DISPLAY=:106 OMP_NUM_THREADS=2 HF_HUB_OFFLINE=1 python -m unittest discover -s tests -v
 실제 Windows 실행, 사용자의 실음성 재학습, GPU VRAM·속도는 이 검증에 포함하지 않습니다.
+
+## 별도 검증 폴더 연결 검증
+
+2026-11-20 (Asia/Seoul), Linux / Python 3.12 / CPU / 가상 Xorg `:107`에서 전체 자동 테스트 **43개 통과**, 건너뜀 0개.
+
+- 별도 검수 manifest를 기존 validation에 추가하고 train/test의 세션 배정 유지
+- main과 검증 source를 합친 뒤 기존 held-out 자료 유지·검수된 라벨 정정 검사
+- 다음 준비·학습에서도 검증 연결 유지, 기존 JSONL·모델·외부 원본 보존
+- 분할 없이 연결, 중복 음성·세션, 미검수·누락, 이전 train/test 이동 거부
+- 어댑터에 기록된 과거 학습·평가 이력 재사용 거부 및 실패한 새 준비 폴더 정리
+- 실제 Tk 창에서 연결 버튼, 동적 개수, 현재 입력 저장, 경로 저장·재열기·다음 학습 전달 검사
+- 구버전 상태 파일 호환, 선택 취소·준비 실패·연결 상태 저장 실패 시 이전 연결 유지
+- 상태 파일의 원자적 교체 실패와 임시 파일 정리 검사
+
+실행: `DISPLAY=:107 OMP_NUM_THREADS=2 HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 /workspace/work/.venv/bin/python -m unittest discover -s tests -v`
+
+43개 전체 검사에는 기존 작은 무작위 Whisper 모델의 CPU 학습·LoRA 저장·재로딩·변환 검사도 포함합니다. 새 GUI 연결 경로의 학습 프로세스는 모의 실행했습니다. 실제 Windows 실행·사용자 실음성 학습·GPU 정확도나 속도 검증을 의미하지 않습니다. 별도 평가만 실행한 외부 녹음은 모델 이력에 자동 등록되지 않으므로 최종 시험용으로 직접 분리해 보관해야 합니다.

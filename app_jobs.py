@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 import importlib.util
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 import uuid
@@ -18,16 +19,38 @@ def training_dependencies():
             if importlib.util.find_spec(name) is None]
 
 
-def prepare_project(project_dir, previous_data=None):
+def prepare_project(project_dir, previous_data=None, validation_manifest=None, adapter=None):
     from prepare import prepare_dataset
 
     project = Path(project_dir).expanduser().resolve()
     manifest = project / "manifest.jsonl"
     if not manifest.is_file():
         raise FileNotFoundError("저장된 학습 자료가 없습니다. 먼저 정답을 확인하고 일괄 저장하세요.")
+    metadata = None
+    if adapter:
+        from runtime import adapter_source
+
+        metadata = adapter_source(adapter)[2]
+        if not all(key in metadata for key in (
+            "training_sessions", "selection_sessions", "held_out_sessions",
+        )):
+            raise ValueError("이전 모델의 학습 이력이 필요합니다. 이 앱에서 학습한 best 폴더를 선택하세요.")
     output = project / "prepared" / _unique_name()
     previous = Path(previous_data).expanduser().resolve() if previous_data else None
-    prepare_dataset(manifest, output, previous_data=previous)
+    prepared = False
+    try:
+        prepare_dataset(manifest, output, previous_data=previous,
+                        validation_manifest=validation_manifest)
+        prepared = True
+        if metadata is not None:
+            from train import checked_splits, data_history
+
+            data_history(checked_splits(output), metadata)
+    except Exception:
+        if prepared:
+            with suppress(OSError):
+                shutil.rmtree(output)
+        raise
     return output
 
 

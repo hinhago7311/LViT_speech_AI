@@ -7,10 +7,10 @@ import queue
 import shutil
 import subprocess
 import sys
+import tempfile
 import threading
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
-import uuid
 
 from app_jobs import prepare_project, start_training, stop_training, training_dependencies
 from review_store import import_recording, load_project, save_project
@@ -104,6 +104,7 @@ class ReviewApp:
         self.common_answer = tk.StringVar()
         self.previous_data = tk.StringVar()
         self.adapter = tk.StringVar()
+        self.validation_manifest = tk.StringVar()
         self.device = tk.StringVar(value="자동")
         self.status = tk.StringVar(value="음성 파일과 정답을 같은 줄에서 관리합니다.")
         self.count = tk.StringVar(value="전체 0개 · 검수 완료 0개")
@@ -208,6 +209,10 @@ class ReviewApp:
         self._button(options, "이전 모델 선택", self.choose_adapter).pack(side="right")
         self._button(options, "기존 분할 선택", self.choose_previous).pack(side="right", padx=5)
         ttk.Label(training, textvariable=self.adapter, foreground="#68758b", wraplength=1080).pack(anchor="w", pady=(5, 0))
+        validation = ttk.Frame(training)
+        validation.pack(fill="x", pady=(5, 0))
+        self._button(validation, "검증 폴더 연결", self.connect_validation_folder).pack(side="left", padx=(0, 8))
+        ttk.Entry(validation, textvariable=self.validation_manifest, state="readonly").pack(side="left", fill="x", expand=True)
         self.log = tk.Text(training, height=5, wrap="word", font=("Consolas", 9), state="disabled",
                            background="#172b4d", foreground="#edf5ff", relief="flat", padx=8, pady=6)
         self.log.pack(fill="x", pady=(5, 0))
@@ -340,12 +345,14 @@ class ReviewApp:
             self.project_path.set(str(path))
             self.previous_data.set("")
             self.adapter.set("")
+            self.validation_manifest.set("")
             state = path / ".lvit-app.json"
             if state.exists():
                 try:
                     values = json.loads(state.read_text(encoding="utf-8"))
                     self.previous_data.set(values.get("previous_data", ""))
                     self.adapter.set(values.get("adapter", ""))
+                    self.validation_manifest.set(values.get("validation_manifest", ""))
                 except (ValueError, OSError, AttributeError) as error:
                     messagebox.showwarning("학습 기록 확인", f"학습 연결 기록을 읽을 수 없습니다: {error}", parent=self.root)
             self.render()
@@ -486,6 +493,47 @@ class ReviewApp:
             self.previous_data.set(path)
             self.status.set(f"기존 분할 유지: {path}")
 
+    def connect_validation_folder(self):
+        self._sync()
+        previous, adapter = self.previous_data.get(), self.adapter.get()
+        if not previous or not adapter:
+            messagebox.showinfo("기존 학습 연결 필요", "원래 학습 자료 폴더를 연 뒤 「기존 분할 선택」과 「이전 모델 선택」으로 학습한 결과를 연결하세요.\n기존 학습·평가 자료를 유지하면서 새 검증 자료를 연결합니다.", parent=self.root)
+            return
+        missing = training_dependencies()
+        if missing:
+            messagebox.showinfo("학습 환경 설치 필요", "README.md의 '명령행 학습 환경 설치' 안내에 따라 학습 패키지를 설치하세요.\n\n필요한 항목: " + ", ".join(missing), parent=self.root)
+            return
+        folder = filedialog.askdirectory(title="검수 저장한 검증 자료 폴더 (manifest.jsonl 포함)", parent=self.root)
+        if not folder:
+            return
+        source = str(Path(folder).expanduser().resolve() / "manifest.jsonl")
+        snapshot = [dict(row) for row in self.records]
+
+        def work():
+            save_project(self.project, snapshot)
+            prepared = prepare_project(self.project, previous, validation_manifest=source, adapter=adapter)
+            counts = {name: sum(bool(line.strip()) for line in (prepared / f"{name}.jsonl").read_text(encoding="utf-8").splitlines())
+                      for name in ("train", "validation", "test")}
+            return prepared, counts
+
+        def connected(result):
+            prepared, counts = result
+            old_previous = self.previous_data.get()
+            old_source = self.validation_manifest.get()
+            self.previous_data.set(str(prepared))
+            self.validation_manifest.set(source)
+            if not self._write_state():
+                self.previous_data.set(old_previous)
+                self.validation_manifest.set(old_source)
+                self.status.set("검증 연결 기록을 저장하지 못해 기존 연결을 유지했습니다. 저장 위치와 권한을 확인한 뒤 다시 연결하세요.")
+                return
+            self.dirty = False
+            summary = f"학습 {counts['train']}개 · 검증 {counts['validation']}개 · 평가 {counts['test']}개"
+            notice = "검증 기준이 바뀌었으므로 이전 검증 CER과 직접 비교하지 마세요."
+            self.status.set(f"검증 폴더 연결 완료 · {summary} · {notice}")
+            self._log(f"\n검증 폴더 연결 · {source}\n{summary}\n{notice}\n")
+        self._job(work, connected, "기존 분할과 모델 이력을 확인하고 검증 자료를 연결하고 있습니다…")
+
     def train(self, quick=False):
         self._sync()
         if not any(row.get("reviewed") is True for row in self.records):
@@ -497,11 +545,12 @@ class ReviewApp:
             return
         snapshot = [dict(row) for row in self.records]
         previous, adapter = self.previous_data.get() or None, self.adapter.get() or None
+        validation_manifest = self.validation_manifest.get() or None
         device = {"자동": "auto", "CPU": "cpu", "GPU": "cuda"}[self.device.get()]
 
         def work():
             save_project(self.project, snapshot)
-            prepared = prepare_project(self.project, previous)
+            prepared = prepare_project(self.project, previous, validation_manifest=validation_manifest, adapter=adapter)
             process, output = start_training(self.project, prepared, device, adapter, quick)
             return process, output, prepared
 
@@ -567,13 +616,25 @@ class ReviewApp:
             self.destroy()
 
     def _write_state(self):
+        temporary = None
         try:
             self.project.mkdir(parents=True, exist_ok=True)
-            temporary = self.project / (".lvit-app-" + uuid.uuid4().hex + ".tmp")
-            temporary.write_text(json.dumps({"previous_data": self.previous_data.get(), "adapter": self.adapter.get()}, ensure_ascii=False), encoding="utf-8")
+            with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=self.project,
+                                             prefix=".lvit-app-", suffix=".tmp", delete=False) as output:
+                temporary = Path(output.name)
+                json.dump({"previous_data": self.previous_data.get(), "adapter": self.adapter.get(),
+                           "validation_manifest": self.validation_manifest.get()}, output, ensure_ascii=False)
             os.replace(temporary, self.project / ".lvit-app.json")
+            return True
         except OSError as error:
             self._log(f"학습 연결 기록을 저장하지 못했습니다: {error}\n")
+            return False
+        finally:
+            if temporary is not None:
+                try:
+                    temporary.unlink(missing_ok=True)
+                except OSError:
+                    pass
 
     def close(self):
         if self.process:

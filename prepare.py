@@ -11,11 +11,23 @@ def _heldout_identity(row):
     return fingerprint, row["session"]
 
 
-def prepare_dataset(manifest, output, seed=42, previous_data=None):
+def prepare_dataset(manifest, output, seed=42, previous_data=None, validation_manifest=None):
     output = Path(output).expanduser().resolve()
     if output.exists():
         raise FileExistsError(f"출력 폴더가 이미 있습니다. 새 경로를 지정하세요: {output}")
+    if validation_manifest is not None and previous_data is None:
+        raise ValueError("외부 검증 자료를 연결하려면 기존 분할 폴더(--previous-data)가 필요합니다.")
     rows = read_manifest(manifest)
+    validation_rows = read_manifest(validation_manifest) if validation_manifest is not None else []
+    main_sessions = {row["session"] for row in rows}
+    validation_sessions = {row["session"] for row in validation_rows}
+    overlap = main_sessions & validation_sessions
+    if overlap:
+        raise ValueError(
+            "외부 검증 자료의 세션이 원래 자료 프로젝트에도 있습니다. "
+            "별도 녹음 세션의 검증 자료를 연결하세요: " + ", ".join(sorted(overlap))
+        )
+    rows += validation_rows
     seen = {}
     for row in rows:
         duration, fingerprint = validate_audio(row["audio"])
@@ -41,7 +53,7 @@ def prepare_dataset(manifest, output, seed=42, previous_data=None):
                         source = row.get("source_name") or Path(row["audio"]).name
                         raise ValueError(
                             "이전 validation/test 음성 또는 세션이 빠졌습니다. "
-                            "기존 항목의 검수 완료·저장을 확인하세요: "
+                            "원래 자료와 연결한 검증 자료의 검수 완료·저장을 확인하세요: "
                             f"{source} / 세션 {session}"
                         )
                     before = {key: row[key] for key in ("text", "language")}
@@ -52,6 +64,13 @@ def prepare_dataset(manifest, output, seed=42, previous_data=None):
                             "audio": current["audio"], "session": session,
                             "before": before, "after": after,
                         })
+        for session in validation_sessions:
+            prior = previous_assignment.get(session)
+            if prior in ("train", "test"):
+                raise ValueError(
+                    f"기존 {prior} 세션을 외부 검증 자료로 바꿀 수 없습니다: {session}"
+                )
+            previous_assignment[session] = "validation"
     splits = split_by_session(rows, seed, previous_assignment=previous_assignment)
     output.mkdir(parents=True, exist_ok=False)
     for name, records in splits.items():
@@ -72,9 +91,11 @@ def main():
     parser.add_argument("--output", required=True, help="새로 만들 출력 폴더")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--previous-data", help="이전 prepared 폴더: 기존 분할을 유지하고 새 세션은 train에 추가")
+    parser.add_argument("--validation-manifest", help="별도 검수 프로젝트의 manifest.jsonl (기존 분할 필요)")
     args = parser.parse_args()
     try:
-        splits = prepare_dataset(args.manifest, args.output, args.seed, args.previous_data)
+        splits = prepare_dataset(args.manifest, args.output, args.seed, args.previous_data,
+                                 args.validation_manifest)
     except (ValueError, OSError) as error:
         parser.error(str(error))
     for name, rows in splits.items():

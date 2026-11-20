@@ -290,6 +290,161 @@ class DesktopTests(unittest.TestCase):
         self.assertTrue(Path(self.app.previous_data.get()).is_dir())
         self.error.assert_not_called()
 
+    def test_validation_connection_saves_current_rows_and_persists_through_training(self):
+        self.add_three()
+        self.app.common_answer.set("기존 학습 정답")
+        self.app.apply_common()
+        self.app.mark_all_reviewed()
+        self.app.save()
+        self.wait()
+        previous = prepare_project(self.project)
+        previous_bytes = {path: path.read_bytes() for path in previous.iterdir() if path.is_file()}
+        adapter = self.project / "runs" / "previous" / "best"
+        adapter.mkdir(parents=True)
+        source = self.folder / "별도 검증 자료"
+        source.mkdir()
+        manifest = source / "manifest.jsonl"
+        manifest.write_text('{"text":"별도 검증 정답"}\n', encoding="utf-8")
+        source_before = manifest.read_bytes()
+        (self.project / ".lvit-app.json").write_text(
+            json.dumps({"previous_data": str(previous), "adapter": str(adapter)}), encoding="utf-8")
+        self.app.validation_manifest.set("stale-link-from-another-project")
+        self.app.open_project(self.project, ask=False)
+        self.wait()
+        self.assertEqual(self.app.validation_manifest.get(), "")
+        self.assertEqual(self.app.previous_data.get(), str(previous))
+        self.assertEqual(self.app.adapter.get(), str(adapter))
+        self.app.hide_record(self.app.records[0]["id"])
+        self.app.views[0].text.delete("1.0", "end")
+        self.app.views[0].text.insert("1.0", "연결 직전 수정한 정답")
+        self.app.mark_all_reviewed()
+        self.assertTrue(self.app.dirty)
+        linked = self.project / "prepared" / "linked"
+        linked.mkdir()
+        for name in ("train", "validation", "test"):
+            (linked / f"{name}.jsonl").write_bytes((previous / f"{name}.jsonl").read_bytes())
+
+        def prepare(project, prior, *, validation_manifest, adapter):
+            self.assertEqual(project, self.project)
+            self.assertEqual(prior, str(previous))
+            self.assertEqual(validation_manifest, str(manifest))
+            self.assertEqual(adapter, self.app.adapter.get())
+            saved = load_project(project)
+            self.assertEqual(len(saved), 3)
+            self.assertEqual(saved[1]["text"], "연결 직전 수정한 정답")
+            self.assertTrue(all(row["reviewed"] for row in saved))
+            return linked
+
+        with patch("app.training_dependencies", return_value=[]), \
+                patch("app.filedialog.askdirectory", return_value=str(source)), \
+                patch("app.prepare_project", side_effect=prepare) as prepare_call:
+            self.app.connect_validation_folder()
+            self.wait()
+        prepare_call.assert_called_once()
+        self.assertEqual(self.app.previous_data.get(), str(linked))
+        self.assertEqual(self.app.adapter.get(), str(adapter))
+        self.assertEqual(self.app.validation_manifest.get(), str(manifest))
+        self.assertEqual(manifest.read_bytes(), source_before)
+        for path, content in previous_bytes.items():
+            self.assertEqual(path.read_bytes(), content)
+        self.app.open_project(self.project, ask=False)
+        self.wait()
+        self.assertEqual(self.app.validation_manifest.get(), str(manifest))
+        self.assertEqual(self.app.previous_data.get(), str(linked))
+        self.assertEqual(self.app.adapter.get(), str(adapter))
+
+        output = self.project / "runs" / "after-validation-link"
+        (output / "best").mkdir(parents=True)
+
+        class FinishedProcess:
+            stdout = io.StringIO("linked-validation-training\n")
+
+            def wait(self):
+                return 0
+
+        with patch("app.training_dependencies", return_value=[]), \
+                patch("app.prepare_project", return_value=linked) as prepare_call, \
+                patch("app.start_training", return_value=(FinishedProcess(), output)) as launcher:
+            self.app.train(quick=True)
+            self.wait()
+        prepare_call.assert_called_once_with(self.project, str(linked),
+                                             validation_manifest=str(manifest), adapter=str(adapter))
+        launcher.assert_called_once_with(self.project, linked, "auto", str(adapter), True)
+        self.app.open_project(self.project, ask=False)
+        self.wait()
+        self.assertEqual(self.app.validation_manifest.get(), str(manifest))
+        self.assertEqual(self.app.adapter.get(), str(output / "best"))
+        self.error.assert_not_called()
+
+    def test_validation_connection_cancel_and_failure_keep_existing_state(self):
+        with patch("app.messagebox.showinfo") as info, \
+                patch("app.filedialog.askdirectory") as chooser, \
+                patch("app.prepare_project") as prepare_call:
+            self.app.connect_validation_folder()
+        info.assert_called_once()
+        chooser.assert_not_called()
+        prepare_call.assert_not_called()
+
+        self.add_three()
+        self.app.common_answer.set("보존할 학습 정답")
+        self.app.apply_common()
+        self.app.mark_all_reviewed()
+        self.app.save()
+        self.wait()
+        saved = load_project(self.project)
+        previous = prepare_project(self.project)
+        adapter = self.project / "runs" / "previous" / "best"
+        adapter.mkdir(parents=True)
+        old_manifest = self.folder / "old-validation.jsonl"
+        old_manifest.write_text("old-validation\n", encoding="utf-8")
+        source = self.folder / "실패할 검증 자료"
+        source.mkdir()
+        manifest = source / "manifest.jsonl"
+        manifest.write_text("invalid-validation\n", encoding="utf-8")
+        self.app.previous_data.set(str(previous))
+        self.app.adapter.set(str(adapter))
+        self.app.validation_manifest.set(str(old_manifest))
+        self.app._write_state()
+        state_before = (self.project / ".lvit-app.json").read_bytes()
+
+        with patch("app.training_dependencies", return_value=[]), \
+                patch("app.filedialog.askdirectory", return_value=""), \
+                patch("app.prepare_project") as prepare_call:
+            self.app.connect_validation_folder()
+        prepare_call.assert_not_called()
+
+        with patch("app.training_dependencies", return_value=[]), \
+                patch("app.filedialog.askdirectory", return_value=str(source)), \
+                patch("app.prepare_project", side_effect=ValueError("검증 자료 연결 실패")):
+            self.app.connect_validation_folder()
+            self.wait()
+        self.assertIn("검증 자료 연결 실패", self.app.status.get())
+        self.assertEqual(self.app.previous_data.get(), str(previous))
+        self.assertEqual(self.app.adapter.get(), str(adapter))
+        self.assertEqual(self.app.validation_manifest.get(), str(old_manifest))
+        self.assertEqual((self.project / ".lvit-app.json").read_bytes(), state_before)
+        self.assertEqual(load_project(self.project), saved)
+        self.assertEqual(manifest.read_text(encoding="utf-8"), "invalid-validation\n")
+        self.assertEqual(old_manifest.read_text(encoding="utf-8"), "old-validation\n")
+
+        linked = self.project / "prepared" / "unsaved-link"
+        linked.mkdir()
+        for name in ("train", "validation", "test"):
+            (linked / f"{name}.jsonl").write_bytes((previous / f"{name}.jsonl").read_bytes())
+        with patch("app.training_dependencies", return_value=[]), \
+                patch("app.filedialog.askdirectory", return_value=str(source)), \
+                patch("app.prepare_project", return_value=linked), \
+                patch.object(self.app, "_write_state", return_value=False) as write_state:
+            self.app.connect_validation_folder()
+            self.wait()
+        write_state.assert_called_once()
+        self.assertEqual(self.app.previous_data.get(), str(previous))
+        self.assertEqual(self.app.adapter.get(), str(adapter))
+        self.assertEqual(self.app.validation_manifest.get(), str(old_manifest))
+        self.assertEqual((self.project / ".lvit-app.json").read_bytes(), state_before)
+        self.assertEqual(load_project(self.project), saved)
+        self.assertNotIn("검증 폴더 연결 완료", self.app.status.get())
+
     def test_failed_stop_restores_controls_and_keeps_the_window_open(self):
         self.app.process = Mock()
         self.app.process.poll.return_value = None

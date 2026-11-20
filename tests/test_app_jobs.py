@@ -1,9 +1,13 @@
+import json
+import math
 import os
 from pathlib import Path
+import struct
 import subprocess
 import sys
 import tempfile
 import unittest
+import wave
 from unittest.mock import Mock, patch
 
 import app_jobs
@@ -20,13 +24,85 @@ class AppJobsTests(unittest.TestCase):
 
     def test_prepare_passes_previous_split_and_uses_unique_destination(self):
         (self.project / "manifest.jsonl").write_text("{}\n", encoding="utf-8")
+        external = self.project / "별도 검증.jsonl"
+        external.write_text("{}\n", encoding="utf-8")
         with patch("prepare.prepare_dataset") as prepare:
-            first = app_jobs.prepare_project(self.project, self.prepared)
+            first = app_jobs.prepare_project(self.project, self.prepared,
+                                             validation_manifest=external)
             second = app_jobs.prepare_project(self.project)
         self.assertNotEqual(first, second)
         self.assertEqual(first.parent, self.project / "prepared")
         self.assertEqual(prepare.call_args_list[0].args, (self.project / "manifest.jsonl", first))
         self.assertEqual(prepare.call_args_list[0].kwargs["previous_data"], self.prepared)
+        self.assertEqual(prepare.call_args_list[0].kwargs["validation_manifest"], external)
+
+    def test_external_validation_checks_adapter_history_and_preserves_prior_files(self):
+        from data import read_manifest, validate_audio
+        from prepare import prepare_dataset
+
+        def recording(name, frequency):
+            path = self.project / name
+            values = [int(4000 * math.sin(index * 2 * math.pi * frequency / 16000))
+                      for index in range(1600)]
+            with wave.open(str(path), "wb") as stream:
+                stream.setnchannels(1)
+                stream.setsampwidth(2)
+                stream.setframerate(16000)
+                stream.writeframes(struct.pack(f"<{len(values)}h", *values))
+            return path
+
+        def row(audio, session):
+            return {"audio": str(audio), "session": session, "text": "검수한 정답",
+                    "language": "ko", "reviewed": True}
+
+        main = self.project / "manifest.jsonl"
+        rows = [row(recording(f"old-{index}.wav", 300 + index * 100), f"day-{index}")
+                for index in range(3)]
+        main.write_text("".join(json.dumps(item, ensure_ascii=False) + "\n" for item in rows),
+                        encoding="utf-8")
+        prior = self.project / "prior"
+        prepare_dataset(main, prior)
+        historical_audio = recording("historical.wav", 1700)
+        fresh_audio = recording("external.wav", 1900)
+        history = {
+            "training_sessions": ["historical-training"],
+            "selection_sessions": ["historical-training"],
+            "held_out_sessions": [],
+            "training_audio_sha256": [validate_audio(historical_audio)[1]],
+            "selection_audio_sha256": [validate_audio(historical_audio)[1]],
+            "held_out_audio_sha256": [],
+        }
+        adapter = self.project / "model"
+        adapter.mkdir()
+        (adapter / "adapter_config.json").write_text("{}", encoding="utf-8")
+        (adapter / "training_info.json").write_text(json.dumps(history), encoding="utf-8")
+        original = {path: path.read_bytes() for path in
+                    [main, *prior.iterdir(), *adapter.iterdir(), *self.project.glob("*.wav")]}
+        external = self.project / "external.jsonl"
+        for name, candidate in (
+                ("trained-session", row(fresh_audio, "historical-training")),
+                ("trained-audio", row(historical_audio, "new-validation-session"))):
+            with self.subTest(case=name):
+                external.write_text(json.dumps(candidate, ensure_ascii=False) + "\n", encoding="utf-8")
+                before = external.read_bytes()
+                with patch("runtime.adapter_source", return_value=("openai/whisper-small", None, history)):
+                    with self.assertRaisesRegex(ValueError, "이전 모델의 학습 자료"):
+                        app_jobs.prepare_project(self.project, prior,
+                                                 validation_manifest=external, adapter=adapter)
+                self.assertEqual(external.read_bytes(), before)
+                self.assertFalse(list((self.project / "prepared").glob("*")))
+                for path, content in original.items():
+                    self.assertEqual(path.read_bytes(), content)
+
+        external.write_text(json.dumps(row(fresh_audio, "new-validation-session"), ensure_ascii=False) + "\n",
+                            encoding="utf-8")
+        with patch("runtime.adapter_source", return_value=("openai/whisper-small", None, history)):
+            prepared = app_jobs.prepare_project(self.project, prior,
+                                                validation_manifest=external, adapter=adapter)
+        validation = read_manifest(prepared / "validation.jsonl")
+        self.assertIn("new-validation-session", {item["session"] for item in validation})
+        for path, content in original.items():
+            self.assertEqual(path.read_bytes(), content)
 
     def test_training_uses_safe_unicode_arguments_and_unique_run_paths(self):
         adapter = self.project / "이전 model"

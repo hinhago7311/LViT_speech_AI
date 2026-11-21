@@ -51,6 +51,15 @@ class DesktopTests(unittest.TestCase):
             time.sleep(.01)
         self.fail("Desktop operation did not finish")
 
+    def wait_until(self, condition):
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            self.root.update()
+            if condition():
+                return
+            time.sleep(.01)
+        self.fail("Desktop condition did not become ready")
+
     def add_three(self):
         for index in range(3):
             source = self.folder / f"녹음 {index}.wav"
@@ -235,6 +244,133 @@ class DesktopTests(unittest.TestCase):
         self.wait()
         self.assertEqual(load_project(self.project), saved[1:])
         self.assertEqual(audio.read_bytes(), original)
+
+    def test_play_path_and_existing_record_playback_show_the_correct_name(self):
+        path = self.folder / "편집용 임시.wav"
+        with patch("app.sys.platform", "linux"), \
+                patch("app.shutil.which", return_value="/mock/ffplay"), \
+                patch("app.subprocess.Popen") as player:
+            self.app.play_path(path)
+            self.assertEqual(self.app.status.get(), f"재생 중: {path.name}")
+            self.assertEqual(player.call_args.args[0][-1], str(path))
+            self.app.play({"audio": "audio/stored.wav", "source_name": "원래 파일.m4a"})
+            self.assertEqual(self.app.status.get(), "재생 중: 원래 파일.m4a")
+            self.assertEqual(player.call_args.args[0][-1], str(self.project / "audio/stored.wav"))
+        self.error.assert_not_called()
+
+    def test_audio_editor_import_preserves_existing_hidden_and_reviewed_data(self):
+        self.add_three()
+        self.app.common_answer.set("보존할 기존 정답")
+        self.app.apply_common()
+        self.app.mark_all_reviewed()
+        self.app.views[1].language.set("en")
+        self.app.mark_all_reviewed()
+        self.app.save()
+        self.wait()
+        saved = load_project(self.project)
+        hidden = saved[0]["id"]
+        self.app.hide_record(hidden)
+        original_audio = {path: path.read_bytes() for path in (self.project / "audio").glob("*.wav")}
+        clip = self.folder / "편집한 구간.wav"
+        sf.write(clip, np.sin(np.arange(2400) * .17) * .1, 16000)
+        clip_before = clip.read_bytes()
+        prepared, editor = Mock(), Mock()
+        opened = {}
+
+        def create_editor(parent, audio, **options):
+            self.assertIs(parent, self.root)
+            self.assertIs(audio, prepared)
+            opened.update(options)
+            return editor
+
+        self.app.language.set("ko")
+        with patch("app.filedialog.askopenfilename", return_value=str(clip)), \
+                patch("clip_audio.prepare_audio", return_value=prepared), \
+                patch("audio_editor.AudioEditor", side_effect=create_editor):
+            self.app.open_audio_editor()
+            self.wait_until(lambda: bool(opened))
+        self.assertTrue(self.app.busy)
+        self.assertIs(self.app.audio_editor, editor)
+        folder_button = next(button for button in self.app.actions
+                             if button.cget("text") == "다른 폴더 열기")
+        with patch("app.filedialog.askdirectory") as chooser:
+            folder_button.invoke()
+        chooser.assert_not_called()
+        self.assertEqual(str(self.app.session_input.cget("state")), "disabled")
+        self.assertEqual(self.app.records, saved)
+
+        prepared.close()
+        opened["on_close"]()
+        self.assertFalse(self.app.busy)
+        self.assertIsNone(self.app.audio_editor)
+        opened["on_saved"]([clip, clip, self.folder / "녹음 0.wav"], "edited-session", "en", True)
+        self.wait()
+        self.assertEqual(self.app.records[:3], saved)
+        self.assertEqual(len(self.app.records), 4)
+        self.assertEqual(len(self.app.views), 3)
+        self.assertNotIn(hidden, {view.record["id"] for view in self.app.views})
+        new_row = self.app.records[-1]
+        self.assertEqual((new_row["session"], new_row["language"], new_row["text"], new_row["reviewed"]),
+                         ("edited-session", "en", "", False))
+        self.warning.assert_called_once()
+        self.app.save()
+        self.wait()
+        self.assertEqual(load_project(self.project), self.app.records)
+        self.assertEqual(len((self.project / "manifest.jsonl").read_text(encoding="utf-8").splitlines()), 3)
+        self.assertEqual(clip.read_bytes(), clip_before)
+        for path, content in original_audio.items():
+            self.assertEqual(path.read_bytes(), content)
+        self.error.assert_not_called()
+
+    def test_audio_editor_cancel_export_only_and_prepare_failure_preserve_project(self):
+        self.add_three()
+        self.app.common_answer.set("유지할 정답")
+        self.app.apply_common()
+        self.app.mark_all_reviewed()
+        self.app.save()
+        self.wait()
+        saved = load_project(self.project)
+        manifest_before = (self.project / "manifest.jsonl").read_bytes()
+        draft_before = (self.project / ".lvit-review.json").read_bytes()
+        clip = self.folder / "외부에 저장한 구간.wav"
+        sf.write(clip, np.sin(np.arange(2400) * .19) * .1, 16000)
+        prepared, opened = Mock(), {}
+
+        def create_editor(parent, audio, **options):
+            opened.update(options)
+            return Mock()
+
+        with patch("app.filedialog.askopenfilename", return_value=""), \
+                patch("clip_audio.prepare_audio") as prepare_call, \
+                patch("audio_editor.AudioEditor") as factory:
+            self.app.open_audio_editor()
+        prepare_call.assert_not_called()
+        factory.assert_not_called()
+        self.assertFalse(self.app.busy)
+
+        with patch("app.filedialog.askopenfilename", return_value=str(clip)), \
+                patch("clip_audio.prepare_audio", return_value=prepared), \
+                patch("audio_editor.AudioEditor", side_effect=create_editor):
+            self.app.open_audio_editor()
+            self.wait_until(lambda: bool(opened))
+        prepared.close()
+        opened["on_close"]()
+        opened["on_saved"]([clip], "not-for-import", "en", False)
+        self.assertFalse(self.app.busy)
+        self.assertFalse(self.app.dirty)
+        self.assertEqual(self.app.records, saved)
+        self.assertEqual((self.project / "manifest.jsonl").read_bytes(), manifest_before)
+        self.assertEqual((self.project / ".lvit-review.json").read_bytes(), draft_before)
+
+        with patch("app.filedialog.askopenfilename", return_value=str(clip)), \
+                patch("clip_audio.prepare_audio", side_effect=ValueError("음성 준비 실패")):
+            self.app.open_audio_editor()
+            self.wait()
+        self.assertFalse(self.app.busy)
+        self.assertIsNone(self.app.audio_editor)
+        self.assertEqual(self.app.records, saved)
+        self.assertEqual(load_project(self.project), saved)
+        self.assertIn("음성 준비 실패", self.app.status.get())
 
     def test_training_prepares_current_answers_and_streams_process_log(self):
         self.add_three()

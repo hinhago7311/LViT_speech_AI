@@ -96,6 +96,7 @@ class ReviewApp:
         self.busy = self.dirty = self.close_after_stop = False
         self.closed = False
         self.process = self.player = self.run_output = None
+        self.audio_editor = None
         self.stop_requested = False
         self.actions = []
         self.project_path = tk.StringVar(value=str(self.project))
@@ -146,6 +147,7 @@ class ReviewApp:
         ttk.Label(folder, text="자료 폴더").pack(side="left", padx=(0, 8))
         ttk.Entry(folder, textvariable=self.project_path, state="readonly").pack(side="left", fill="x", expand=True)
         self._button(folder, "다른 폴더 열기", self.choose_project).pack(side="left", padx=(8, 0))
+        self._button(folder, "음성 편집기", self.open_audio_editor).pack(side="left", padx=(8, 0))
         tools = ttk.Frame(outer)
         tools.grid(row=3, column=0, sticky="ew", pady=(0, 5))
         self._button(tools, "+ 음성 파일 여러 개 추가", self.add_files, style="Accent.TButton").pack(side="left")
@@ -373,8 +375,10 @@ class ReviewApp:
             filetypes=(("음성 파일", "*.wav *.flac *.ogg *.mp3 *.m4a *.aac *.opus *.wma *.aiff"), ("모든 파일", "*.*")))
         if not paths:
             return
+        self._import_paths(paths, self.session.get().strip(), self.language.get())
+
+    def _import_paths(self, paths, session, language):
         self._sync()
-        session, language = self.session.get().strip(), self.language.get()
         existing = {row["id"] for row in self.records}
 
         def work():
@@ -400,6 +404,49 @@ class ReviewApp:
             if errors:
                 messagebox.showwarning("추가하지 못한 파일", "\n".join(errors[:8]), parent=self.root)
         self._job(work, added, "음성을 검사하고 재생 가능한 WAV로 준비하고 있습니다…")
+
+    def open_audio_editor(self):
+        if self.busy:
+            return
+        from audio_editor import AudioEditor
+        from clip_audio import prepare_audio
+
+        source = filedialog.askopenfilename(parent=self.root, title="편집할 원본 음성 선택 (30초 초과 가능)",
+            filetypes=(("음성 파일", "*.wav *.flac *.ogg *.mp3 *.m4a *.aac *.opus *.wma *.aiff"), ("모든 파일", "*.*")))
+        if not source:
+            return
+        self._sync()
+        language = self.language.get()
+
+        def editor_closed():
+            self.audio_editor = None
+            if not self.closed:
+                self._busy(False, "음성 편집기를 닫았습니다. 저장한 구간에 맞는 정답을 입력하고 검수하세요.")
+
+        def exported(paths, session, selected_language, add_to_list=True):
+            self.session.set(session)
+            self.language.set(selected_language)
+            if add_to_list:
+                self._import_paths(paths, session, selected_language)
+            else:
+                self.status.set(f"구간 파일 {len(paths)}개 저장 완료 · {Path(paths[0]).parent}")
+
+        def opened(audio):
+            self._busy(True, "음성 편집기에서 구간을 선택하고 저장하세요. 원래 자료 폴더는 유지됩니다.")
+            try:
+                self.audio_editor = AudioEditor(self.root, audio, language=language,
+                    on_saved=exported, on_close=editor_closed, play=self.play_path, stop=self.stop_audio)
+            except Exception as error:
+                detail = str(error)
+                try:
+                    audio.close()
+                except Exception as cleanup_error:
+                    detail += f"\n임시 음성 정리: {cleanup_error}"
+                finally:
+                    editor_closed()
+                messagebox.showerror("음성 편집기를 열지 못했습니다", detail, parent=self.root)
+
+        self._job(lambda: prepare_audio(source), opened, "긴 음성을 읽고 편집용 파형을 준비하고 있습니다…")
 
     def remove(self, identity):
         self._sync()
@@ -456,7 +503,10 @@ class ReviewApp:
         self._job(lambda: save_project(self.project, snapshot), saved, "초안과 검수 완료 자료를 저장하고 있습니다…")
 
     def play(self, record):
-        path = self.project / record["audio"]
+        self.play_path(self.project / record["audio"], record.get("source_name"))
+
+    def play_path(self, path, display_name=None):
+        path = Path(path)
         try:
             self.stop_audio()
             if sys.platform == "win32":
@@ -468,7 +518,7 @@ class ReviewApp:
                     raise ValueError("이 환경에는 재생기가 없습니다. Windows에서는 기본 재생을 지원합니다.")
                 args = [command, str(path)] if sys.platform == "darwin" else [command, "-nodisp", "-autoexit", "-loglevel", "quiet", str(path)]
                 self.player = subprocess.Popen(args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            self.status.set(f"재생 중: {record.get('source_name', path.name)}")
+            self.status.set(f"재생 중: {display_name or path.name}")
         except (OSError, ValueError, RuntimeError) as error:
             messagebox.showerror("재생 실패", str(error), parent=self.root)
 

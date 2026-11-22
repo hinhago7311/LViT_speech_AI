@@ -416,25 +416,19 @@ class ReviewApp:
         if not source:
             return
         self._sync()
-        language = self.language.get()
 
         def editor_closed():
             self.audio_editor = None
             if not self.closed:
-                self._busy(False, "음성 편집기를 닫았습니다. 저장한 구간에 맞는 정답을 입력하고 검수하세요.")
+                self._busy(False, "음성 편집기를 닫았습니다.")
 
-        def exported(paths, session, selected_language, add_to_list=True):
-            self.session.set(session)
-            self.language.set(selected_language)
-            if add_to_list:
-                self._import_paths(paths, session, selected_language)
-            else:
-                self.status.set(f"구간 파일 {len(paths)}개 저장 완료 · {Path(paths[0]).parent}")
+        def exported(paths):
+            self.status.set(f"구간 파일 {len(paths)}개 저장 완료 · {Path(paths[0]).parent} · 등록은 「음성 파일 여러 개 추가」를 사용하세요.")
 
         def opened(audio):
             self._busy(True, "음성 편집기에서 구간을 선택하고 저장하세요. 원래 자료 폴더는 유지됩니다.")
             try:
-                self.audio_editor = AudioEditor(self.root, audio, language=language,
+                self.audio_editor = AudioEditor(self.root, audio,
                     on_saved=exported, on_close=editor_closed, play=self.play_path, stop=self.stop_audio)
             except Exception as error:
                 detail = str(error)

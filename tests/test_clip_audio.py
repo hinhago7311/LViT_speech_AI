@@ -11,7 +11,7 @@ import wave
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from clip_audio import export_segments, prepare_audio, validate_segment
+from clip_audio import clip_filename, default_clip_name, export_segments, prepare_audio, validate_segment
 from data import SAMPLE_RATE
 from review_store import import_recording, load_project, save_project
 
@@ -216,6 +216,73 @@ class ClipAudioTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             export_segments(audio, [(0, audio.duration)], destination)
         self.assertFalse(list(destination.glob("*")))
+        self.assertEqual(source.read_bytes(), original)
+
+    def test_custom_names_keep_clip_contents_and_preserve_existing_casefold_names(self):
+        source, samples = self.wav()
+        original = source.read_bytes()
+        audio = self.prepared(source)
+        self.assertEqual(clip_filename("질문"), "질문.wav")
+        self.assertEqual(clip_filename("Answer.WAV"), "Answer.WAV")
+        self.assertEqual(default_clip_name(source, 1), source.stem + "_001.wav")
+        destination = self.root / "custom"
+        destination.mkdir()
+        (destination / "질문.wav").write_bytes(b"existing question")
+        (destination / "answer.wav").write_bytes(b"existing answer")
+        paths = export_segments(audio, [(0, .5), (.5, 1)], destination,
+                                names=["질문", "Answer.WAV"])
+        self.assertEqual([path.name for path in paths], ["질문_2.wav", "Answer_2.WAV"])
+        for path, (first, last) in zip(paths, ((0, 8000), (8000, 16000))):
+            np.testing.assert_array_equal(self.read_wav(path), samples[first:last])
+        self.assertEqual((destination / "질문.wav").read_bytes(), b"existing question")
+        self.assertEqual((destination / "answer.wav").read_bytes(), b"existing answer")
+        self.assertEqual(source.read_bytes(), original)
+
+    def test_invalid_custom_names_and_batch_names_are_rejected_before_writes(self):
+        source, _ = self.wav()
+        audio = self.prepared(source)
+        invalid = ("", " ", None, 7, ".wav", "../escape", "folder/name", "folder\\name",
+                   "C:escape", "bad?name", "bad|name", "bad\nname", "tail.", "tail ",
+                   "CON", "nul.wav", "COM1.txt", "LPT²", "CONIN$.wav", "x" * 241,
+                   "가" * 80)
+        for index, name in enumerate(invalid):
+            with self.subTest(name=name):
+                directory = self.root / f"bad-name-{index}"
+                with self.assertRaises(ValueError):
+                    export_segments(audio, [(0, .5)], directory, names=[name])
+                self.assertFalse(directory.exists())
+        for index, names in enumerate(([], ["one"], ["same", "SAME.WAV"], "not a list")):
+            with self.subTest(names=names):
+                directory = self.root / f"bad-batch-{index}"
+                with self.assertRaises(ValueError):
+                    export_segments(audio, [(0, .5), (.5, 1)], directory, names=names)
+                self.assertFalse(directory.exists())
+        self.assertEqual(clip_filename(default_clip_name(Path("가" * 100 + ".wav"), 1)),
+                         default_clip_name(Path("가" * 100 + ".wav"), 1))
+
+    def test_custom_name_failure_rolls_back_only_new_files(self):
+        source, _ = self.wav()
+        original = source.read_bytes()
+        audio = self.prepared(source)
+        destination = self.root / "rollback-custom"
+        destination.mkdir()
+        existing = destination / "clip.wav"
+        existing.write_bytes(b"keep existing output")
+        original_open = Path.open
+        attempts = []
+
+        def fail_second_output(path, mode="r", *args, **kwargs):
+            if mode == "xb":
+                attempts.append(path)
+                if len(attempts) == 2:
+                    raise OSError("custom output failure")
+            return original_open(path, mode, *args, **kwargs)
+
+        with patch("pathlib.Path.open", new=fail_second_output):
+            with self.assertRaisesRegex(OSError, "custom output failure"):
+                export_segments(audio, [(0, .5), (.5, 1)], destination, names=["clip", "second"])
+        self.assertEqual(list(destination.iterdir()), [existing])
+        self.assertEqual(existing.read_bytes(), b"keep existing output")
         self.assertEqual(source.read_bytes(), original)
 
 

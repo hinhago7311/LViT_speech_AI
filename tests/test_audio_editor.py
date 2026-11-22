@@ -42,11 +42,11 @@ class AudioEditorTests(unittest.TestCase):
             self.order.append("close")
             self.closed_with_temp.append(self.audio.path.exists())
 
-        def on_saved(paths, session, language, add_to_list):
+        def on_saved(paths):
             self.order.append("saved")
-            self.saved.append((paths, session, language, add_to_list))
+            self.saved.append(paths)
 
-        self.editor = AudioEditor(self.root, self.audio, language="en", on_saved=on_saved,
+        self.editor = AudioEditor(self.root, self.audio, on_saved=on_saved,
                                   on_close=on_close, play=self.play, stop=self.stop)
         self.error = patch("audio_editor.messagebox.showerror").start()
         self.warning = patch("audio_editor.messagebox.showwarning").start()
@@ -74,15 +74,15 @@ class AudioEditorTests(unittest.TestCase):
         self.editor.end_var.set(str(end))
 
     def test_drag_manual_edit_limit_and_cancel_preserve_the_source(self):
-        self.editor.language_input.focus_force()
-        for language, sequence, options in (("en", "<MouseWheel>", {"delta": -120}),
-                                             ("ko", "<MouseWheel>", {"delta": 120}),
-                                             ("en", "<Button-5>", {}),
-                                             ("ko", "<Button-4>", {})):
-            self.editor.language.set(language)
-            self.editor.language_input.event_generate(sequence, **options)
+        self.editor.disposition_input.focus_force()
+        for value, sequence, options in (("제외", "<MouseWheel>", {"delta": -120}),
+                                         ("저장", "<MouseWheel>", {"delta": 120}),
+                                         ("제외", "<Button-5>", {}),
+                                         ("저장", "<Button-4>", {})):
+            self.editor.disposition.set(value)
+            self.editor.disposition_input.event_generate(sequence, **options)
             self.root.update()
-            self.assertEqual(self.editor.language.get(), language)
+            self.assertEqual(self.editor.disposition.get(), value)
         width = self.editor.canvas.winfo_width()
         self.assertGreater(width, 100)
         self.editor.canvas.event_generate("<ButtonPress-1>", x=width // 4, y=40)
@@ -94,16 +94,45 @@ class AudioEditorTests(unittest.TestCase):
         self.assertLess(float(self.editor.end_var.get()), self.audio.duration)
 
         self.select(2.25, 6.5)
+        self.editor.filename.set("첫 구간")
+        self.editor.disposition.set("제외")
         self.editor.add_segment()
-        self.assertEqual(self.editor.segments, [(2.25, 6.5)])
+        self.assertEqual(self.editor.segments,
+                         [{"start": 2.25, "end": 6.5, "name": "첫 구간.wav", "keep": False}])
+        self.assertEqual(self.editor.disposition.get(), "저장")
+        self.assertNotEqual(self.editor.filename.get(), "첫 구간.wav")
         self.editor.segment_list.selection_set("0")
         self.root.update()
+        self.assertEqual(self.editor.filename.get(), "첫 구간.wav")
+        self.assertEqual(self.editor.disposition.get(), "제외")
         self.select(3, 5)
+        self.editor.filename.set("수정 구간.wav")
+        self.editor.disposition.set("저장")
         self.editor.update_segment()
-        self.assertEqual(self.editor.segments, [(3, 5)])
+        kept = {"start": 3, "end": 5, "name": "수정 구간.wav", "keep": True}
+        self.assertEqual(self.editor.segments, [kept])
+        self.select(10, 11)
+        self.editor.filename.set("삭제할 구간.wav")
+        self.editor.disposition.set("제외")
+        self.editor.add_segment()
+        self.editor.segment_list.selection_set("1")
+        self.root.update()
+        self.assertEqual(self.editor.filename.get(), "삭제할 구간.wav")
+        self.assertEqual(self.editor.disposition.get(), "제외")
+        queued = [segment.copy() for segment in self.editor.segments]
+        self.editor.filename.set("수정 구간.wav")
+        self.editor.update_segment()
+        self.assertEqual(self.editor.segments, queued)
+        self.assertTrue(self.error.called)
+        self.select(3, 5)
+        self.editor.filename.set("다른 이름.wav")
+        self.editor.update_segment()
+        self.assertEqual(self.editor.segments, queued)
+        self.editor.remove_segments()
+        self.assertEqual(self.editor.segments, [kept])
         self.select(0, 31)
         self.editor.add_segment()
-        self.assertEqual(self.editor.segments, [(3, 5)])
+        self.assertEqual(self.editor.segments, [kept])
         self.assertTrue(self.error.called or self.warning.called)
 
         self.select(3, 5)
@@ -121,31 +150,39 @@ class AudioEditorTests(unittest.TestCase):
         self.assertFalse(self.audio.path.exists())
         self.assertEqual(self.source.read_bytes(), self.original)
 
-    def test_multiple_clips_save_before_callback_with_one_source_session(self):
+    def test_named_kept_clips_save_without_overwriting_the_source(self):
         self.editor.geometry("820x640")
         self.root.update()
         right = self.editor.winfo_rootx() + self.editor.winfo_width()
         bottom = self.editor.winfo_rooty() + self.editor.winfo_height()
-        for widget in self.editor.buttons + [self.editor.add_check, self.editor.status_label]:
+        for widget in self.editor.buttons + self.editor.entries + [self.editor.disposition_input,
+                                                                  self.editor.status_label]:
             self.assertTrue(widget.winfo_ismapped())
             self.assertLessEqual(widget.winfo_rootx() + widget.winfo_width(), right)
             self.assertLessEqual(widget.winfo_rooty() + widget.winfo_height(), bottom)
-        self.assertTrue(self.editor.add_to_list.get())
-        self.assertEqual(self.editor.session.get(), self.audio.session)
         self.select(1, 3)
+        self.editor.filename.set(self.source.name)
+        self.editor.disposition.set("저장")
+        self.editor.add_segment()
+        self.select(5, 6)
+        self.editor.filename.set("제외할 파일.wav")
+        self.editor.disposition.set("제외")
         self.editor.add_segment()
         self.select(10, 12.5)
+        self.editor.filename.set("두 번째 구간.wav")
+        self.editor.disposition.set("저장")
         self.editor.add_segment()
-        output = self.folder / "저장할 구간"
+        output = self.folder
         self.editor.output_dir.set(str(output))
         self.editor.save_segments()
         self.wait_for(lambda: bool(self.saved))
         self.assertEqual(len(self.saved), 1)
-        paths, session, language, add_to_list = self.saved[0]
+        paths = self.saved[0]
         self.assertEqual(len(paths), 2)
-        self.assertEqual(session, self.audio.session)
-        self.assertEqual(language, "en")
-        self.assertIs(add_to_list, True)
+        self.assertNotEqual(Path(paths[0]), self.source)
+        self.assertTrue(Path(paths[0]).stem.startswith(self.source.stem))
+        self.assertEqual(Path(paths[1]).name, "두 번째 구간.wav")
+        self.assertFalse((output / "제외할 파일.wav").exists())
         for path, frames in zip(paths, (2 * 16000, int(2.5 * 16000))):
             self.assertEqual(Path(path).parent, output)
             with wave.open(str(path), "rb") as recording:
@@ -157,12 +194,29 @@ class AudioEditorTests(unittest.TestCase):
         self.assertEqual(self.source.read_bytes(), self.original)
         self.error.assert_not_called()
 
-    def test_failed_save_keeps_the_editor_open_and_can_retry_without_import(self):
+    def test_invalid_names_excluded_only_queue_and_failed_save_keep_data(self):
         self.select(0, 2)
+        self.editor.filename.set("../escape.wav")
         self.editor.add_segment()
+        self.assertEqual(self.editor.segments, [])
+        self.assertTrue(self.error.called)
+        self.editor.filename.set("제외만.wav")
+        self.editor.disposition.set("제외")
+        self.editor.add_segment()
+        self.editor.save_segments()
+        self.assertFalse(Path(self.editor.output_dir.get()).exists())
+        self.assertTrue(self.editor.winfo_exists())
+        self.assertEqual(self.saved, [])
+        self.assertEqual(self.closed_with_temp, [])
+        self.editor.segment_list.selection_set("0")
+        self.root.update()
+        self.editor.filename.set("재시도.wav")
+        self.editor.disposition.set("저장")
+        self.editor.update_segment()
         blocked = self.folder / "파일을 폴더로 사용할 수 없음"
         blocked.write_bytes(b"keep existing file")
         self.editor.output_dir.set(str(blocked))
+        self.error.reset_mock()
         self.editor.save_segments()
         self.wait_for(lambda: self.error.called)
         self.assertTrue(self.editor.winfo_exists())
@@ -173,11 +227,10 @@ class AudioEditorTests(unittest.TestCase):
         self.assertEqual(self.source.read_bytes(), self.original)
 
         self.editor.output_dir.set(str(self.folder / "다시 저장"))
-        self.editor.add_to_list.set(False)
         self.editor.save_segments()
         self.wait_for(lambda: bool(self.saved))
-        self.assertEqual(len(self.saved[0][0]), 1)
-        self.assertIs(self.saved[0][3], False)
+        self.assertEqual(len(self.saved[0]), 1)
+        self.assertEqual(Path(self.saved[0][0]).name, "재시도.wav")
         self.assertEqual(self.closed_with_temp, [False])
         self.assertEqual(self.order[-2:], ["close", "saved"])
 
@@ -187,11 +240,11 @@ class AudioEditorTests(unittest.TestCase):
         self.editor.output_dir.set(str(self.folder / "작업 중 닫기"))
         started, release = threading.Event(), threading.Event()
 
-        def delayed_export(*args):
+        def delayed_export(*args, **kwargs):
             started.set()
             if not release.wait(3):
                 raise TimeoutError("Test export was not released")
-            return export_segments(*args)
+            return export_segments(*args, **kwargs)
 
         with patch("audio_editor.export_segments", side_effect=delayed_export):
             try:

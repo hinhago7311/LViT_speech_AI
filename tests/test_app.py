@@ -258,7 +258,7 @@ class DesktopTests(unittest.TestCase):
             self.assertEqual(player.call_args.args[0][-1], str(self.project / "audio/stored.wav"))
         self.error.assert_not_called()
 
-    def test_audio_editor_import_preserves_existing_hidden_and_reviewed_data(self):
+    def test_audio_editor_only_saves_files_and_preserves_existing_project(self):
         self.add_three()
         self.app.common_answer.set("보존할 기존 정답")
         self.app.apply_common()
@@ -268,6 +268,8 @@ class DesktopTests(unittest.TestCase):
         self.app.save()
         self.wait()
         saved = load_project(self.project)
+        manifest_before = (self.project / "manifest.jsonl").read_bytes()
+        draft_before = (self.project / ".lvit-review.json").read_bytes()
         hidden = saved[0]["id"]
         self.app.hide_record(hidden)
         original_audio = {path: path.read_bytes() for path in (self.project / "audio").glob("*.wav")}
@@ -283,7 +285,8 @@ class DesktopTests(unittest.TestCase):
             opened.update(options)
             return editor
 
-        self.app.language.set("ko")
+        self.app.language.set("en")
+        self.app.session.set("manual-session")
         with patch("app.filedialog.askopenfilename", return_value=str(clip)), \
                 patch("clip_audio.prepare_audio", return_value=prepared), \
                 patch("audio_editor.AudioEditor", side_effect=create_editor):
@@ -303,26 +306,26 @@ class DesktopTests(unittest.TestCase):
         opened["on_close"]()
         self.assertFalse(self.app.busy)
         self.assertIsNone(self.app.audio_editor)
-        opened["on_saved"]([clip, clip, self.folder / "녹음 0.wav"], "edited-session", "en", True)
+        with patch.object(self.app, "_import_paths") as importer:
+            opened["on_saved"]([clip])
+        importer.assert_not_called()
         self.wait()
-        self.assertEqual(self.app.records[:3], saved)
-        self.assertEqual(len(self.app.records), 4)
-        self.assertEqual(len(self.app.views), 3)
+        self.assertEqual(self.app.records, saved)
+        self.assertEqual(len(self.app.views), 2)
         self.assertNotIn(hidden, {view.record["id"] for view in self.app.views})
-        new_row = self.app.records[-1]
-        self.assertEqual((new_row["session"], new_row["language"], new_row["text"], new_row["reviewed"]),
-                         ("edited-session", "en", "", False))
-        self.warning.assert_called_once()
-        self.app.save()
-        self.wait()
-        self.assertEqual(load_project(self.project), self.app.records)
-        self.assertEqual(len((self.project / "manifest.jsonl").read_text(encoding="utf-8").splitlines()), 3)
+        self.assertFalse(self.app.dirty)
+        self.assertEqual(self.app.language.get(), "en")
+        self.assertEqual(self.app.session.get(), "manual-session")
+        self.assertEqual(load_project(self.project), saved)
+        self.assertEqual((self.project / "manifest.jsonl").read_bytes(), manifest_before)
+        self.assertEqual((self.project / ".lvit-review.json").read_bytes(), draft_before)
+        self.assertIn("구간 파일 1개 저장 완료", self.app.status.get())
         self.assertEqual(clip.read_bytes(), clip_before)
         for path, content in original_audio.items():
             self.assertEqual(path.read_bytes(), content)
         self.error.assert_not_called()
 
-    def test_audio_editor_cancel_export_only_and_prepare_failure_preserve_project(self):
+    def test_audio_editor_cancel_and_failures_preserve_project(self):
         self.add_three()
         self.app.common_answer.set("유지할 정답")
         self.app.apply_common()
@@ -355,7 +358,7 @@ class DesktopTests(unittest.TestCase):
             self.wait_until(lambda: bool(opened))
         prepared.close()
         opened["on_close"]()
-        opened["on_saved"]([clip], "not-for-import", "en", False)
+        opened["on_saved"]([clip])
         self.assertFalse(self.app.busy)
         self.assertFalse(self.app.dirty)
         self.assertEqual(self.app.records, saved)
@@ -371,6 +374,18 @@ class DesktopTests(unittest.TestCase):
         self.assertEqual(self.app.records, saved)
         self.assertEqual(load_project(self.project), saved)
         self.assertIn("음성 준비 실패", self.app.status.get())
+
+        prepared.close.side_effect = OSError("임시 정리 실패")
+        with patch("app.filedialog.askopenfilename", return_value=str(clip)), \
+                patch("clip_audio.prepare_audio", return_value=prepared), \
+                patch("audio_editor.AudioEditor", side_effect=RuntimeError("편집 창 실패")):
+            self.app.open_audio_editor()
+            self.wait()
+        self.assertFalse(self.app.busy)
+        self.assertIsNone(self.app.audio_editor)
+        self.assertEqual(self.app.records, saved)
+        self.assertEqual((self.project / "manifest.jsonl").read_bytes(), manifest_before)
+        self.assertEqual((self.project / ".lvit-review.json").read_bytes(), draft_before)
 
     def test_training_prepares_current_answers_and_streams_process_log(self):
         self.add_three()

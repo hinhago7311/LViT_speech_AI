@@ -116,3 +116,19 @@ GUI 학습 버튼의 프로세스 연결은 가짜 학습 프로세스로 검사
 실행: `DISPLAY=:108 OMP_NUM_THREADS=2 HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 /workspace/work/.venv/bin/python -m unittest discover -s tests -v`
 
 구문 검사와 `git diff --check`도 통과했습니다. 기존 30초 학습 입력 제한과 학습·검증·평가 분할 처리는 변경하지 않았습니다. 모든 신규 음성 표본은 합성 자료이며 사용자 녹음을 포함하지 않습니다. 실제 Windows 음성 출력·GPU 학습·실음성 정확도 검증은 포함하지 않습니다. LViT와 보류된 표정·단축키 미리보기는 변경하지 않았습니다.
+
+## 구간별 파일명과 파일 저장 전용 편집 검증
+
+2026-11-22 (UTC), Linux / Python 3.12 / CPU / 실제 Tk 및 가상 Xorg `:109`에서 전체 자동 테스트 **60개 통과**, 건너뜀 0개. 이 버전은 편집 결과의 자동 학습 등록을 제거합니다.
+
+- 각 구간의 파일명과 저장/제외 처리, 경계·이름·처리 수정 및 저장 전 목록 삭제
+- 저장 대상 구간만 지정한 이름의 개별 WAV로 내보내며, 제외·삭제된 구간은 출력하지 않음
+- WAV 확장자 보완, Windows 금지 문자·장치명·경로·빈 이름·길이·배치 중복 사전 검사
+- 기존 동명·대소문자 차이 파일과 원본을 보존하고 새 충돌 번호 사용, 배치 실패 시 이번 출력만 정리
+- 파일만 저장한 뒤 기존 학습 목록·숨김·정답·검수·세션·언어·manifest와 초안 파일 불변
+- 취소·음성 준비 실패·편집 창 생성 및 임시 정리 실패에서도 부모 잠금 해제와 기존 자료 보존
+- 선택 구간 재생, 비동기 작업 중 닫기, 처리 선택기의 휠 변경 차단, 최소 창 크기 표시 유지
+
+실행: `DISPLAY=:109 OMP_NUM_THREADS=2 HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 /workspace/work/.venv/bin/python -m unittest discover -s tests -v`
+
+기존 CPU Whisper/LoRA 검사도 포함합니다. 신규 음성 표본은 모두 합성 자료이며, 실제 Windows 재생·GPU 학습·실음성 정확도를 검증한 것은 아닙니다. 학습·분할 코드와 보류된 LViT·표정·단축키 기능은 변경하지 않았습니다.

@@ -113,7 +113,35 @@ def _filename_prefix(source):
     return prefix[:80].rstrip(" .") or "audio"
 
 
-def export_segments(audio, ranges, output_dir):
+def clip_filename(name):
+    """Return a safe user-selected WAV filename without changing its basename."""
+    if not isinstance(name, str) or not name.strip():
+        raise ValueError("각 구간에 비어 있지 않은 파일명을 입력하세요.")
+    if name.endswith(".") or name[-1].isspace() or re.search(r'[<>:"/\\|?*\x00-\x1f]', name):
+        raise ValueError("파일명에 경로·금지 문자를 넣거나 끝에 공백·점을 붙일 수 없습니다.")
+    filename = name if name.lower().endswith(".wav") else name + ".wav"
+    if not filename[:-4].strip(" ."):
+        raise ValueError("확장자 앞에 파일명을 입력하세요.")
+    device = filename.split(".", 1)[0].rstrip(" ").upper()
+    if device in {"CON", "PRN", "AUX", "NUL", "CONIN$", "CONOUT$"} or re.fullmatch(r"(?:COM|LPT)[1-9¹²³]", device):
+        raise ValueError("Windows 예약 장치명은 파일명으로 사용할 수 없습니다.")
+    if len(filename.encode("utf-8")) > 240 or len(filename.encode("utf-16-le")) // 2 > 240:
+        raise ValueError("파일명이 너무 깁니다. 더 짧은 이름을 입력하세요.")
+    return filename
+
+
+def default_clip_name(source, number):
+    """Return the original safe prefix_001.wav naming pattern."""
+    if isinstance(number, bool) or not isinstance(number, int) or number < 1:
+        raise ValueError("파일 번호는 1 이상의 정수여야 합니다.")
+    prefix = _filename_prefix(Path(source))
+    suffix = f"_{number:03d}.wav"
+    while prefix and len((prefix + suffix).encode("utf-8")) > 240:
+        prefix = prefix[:-1]
+    return clip_filename((prefix or "audio") + suffix)
+
+
+def export_segments(audio, ranges, output_dir, names=None):
     """Write new WAV files exclusively; roll back only files made by this call."""
     segments = []
     for selected in ranges:
@@ -124,23 +152,51 @@ def export_segments(audio, ranges, output_dir):
         raise ValueError("저장할 음성 구간을 하나 이상 선택하세요.")
     if len(set(segments)) != len(segments):
         raise ValueError("동일한 음성 구간이 중복되어 있습니다.")
+    filenames = None
+    if names is not None:
+        if isinstance(names, (str, bytes)):
+            raise ValueError("구간별 파일명을 목록으로 지정하세요.")
+        try:
+            filenames = [clip_filename(name) for name in names]
+        except TypeError as error:
+            raise ValueError("구간별 파일명을 목록으로 지정하세요.") from error
+        if len(filenames) != len(segments):
+            raise ValueError("선택한 구간 수와 파일명 수가 같아야 합니다.")
+        if len({name.casefold() for name in filenames}) != len(filenames):
+            raise ValueError("구간별 파일명이 중복되어 있습니다. 대소문자만 다른 이름도 사용할 수 없습니다.")
+    reserved = {name.casefold() for name in filenames or []}
     directory = Path(output_dir).expanduser().resolve()
     created, number = [], 1
-    prefix = _filename_prefix(audio.source)
     try:
         with wave.open(str(audio.path), "rb") as source:
             if (source.getnchannels(), source.getsampwidth(), source.getframerate(),
                     source.getcomptype(), source.getnframes()) != (1, 2, SAMPLE_RATE, "NONE", audio.frames):
                 raise ValueError("임시 음성 파일이 손상되었거나 준비한 형식과 다릅니다.")
             directory.mkdir(parents=True, exist_ok=True)
-            for first, last in segments:
+            occupied = {path.name.casefold() for path in directory.iterdir()}
+            for index, (first, last) in enumerate(segments):
+                suffix = 1
                 while True:
-                    destination = directory / f"{prefix}_{number:03d}.wav"
-                    number += 1
+                    if filenames is None:
+                        filename = default_clip_name(audio.source, number)
+                        number += 1
+                    else:
+                        requested = filenames[index]
+                        filename = requested if suffix == 1 else f"{requested[:-4]}_{suffix}{requested[-4:]}"
+                        suffix += 1
+                        if filename.casefold() != requested.casefold() and filename.casefold() in reserved:
+                            continue
+                    if filename.casefold() in occupied:
+                        continue
+                    if len(filename.encode("utf-8")) > 255 or len(filename.encode("utf-16-le")) // 2 > 255:
+                        raise ValueError("충돌 번호를 붙일 수 있도록 파일명을 더 짧게 입력하세요.")
+                    destination = directory / filename
                     try:
                         handle = destination.open("xb")
                     except FileExistsError:
+                        occupied.add(filename.casefold())
                         continue
+                    occupied.add(filename.casefold())
                     break
                 created.append(destination)
                 with handle, wave.open(handle, "wb") as output:
